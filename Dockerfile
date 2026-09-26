@@ -6,14 +6,19 @@ ARG DART_PROTOC_PLUGIN_VERSION="24.0.0"
 ARG BUF_VERSION="1.70.0"
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PATH="/opt/dotnet:/opt/dotnet/tools:/usr/local/bin:$PATH" \
+    PATH="/opt/dotnet:/opt/dotnet/tools:/usr/local/bin:/usr/local/share/pnpm/bin:$PATH" \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-    DOTNET_NOLOGO=1
+    DOTNET_NOLOGO=1 \
+    PNPM_HOME=/usr/local/share/pnpm
 
 # general dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git unzip wget xz-utils zip ca-certificates nodejs npm ripgrep fzf less zsh vim \
+    curl git unzip wget xz-utils zip ca-certificates nodejs ripgrep fzf less zsh vim \
     && rm -rf /var/lib/apt/lists/*
+
+# pnpm
+RUN mkdir -p "$PNPM_HOME" && chmod 755 "$PNPM_HOME" \
+    && curl -fsSL https://get.pnpm.io/install.sh | SHELL=$(which zsh) zsh -
 
 # just
 RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | \
@@ -26,7 +31,7 @@ RUN PREFIX="/usr/local" && \
     tar -xvzf - -C "${PREFIX}" --strip-components 1
 
 # copilot
-RUN npm install -g @github/copilot
+RUN pnpm add -g @github/copilot
 
 # dotnet
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir /opt/dotnet
@@ -79,7 +84,7 @@ RUN node -e "const fs=require('fs');const p='/home/msb/.claude.json';const c=fs.
 
 # pre-create directories that may be later bind mounted
 RUN mkdir -p /home/msb/.nuget/packages \
-    /home/msb/.npm \
+    /home/msb/.local/share/pnpm/store \
     /home/msb/.pub-cache \
     /home/msb/.cargo/registry \
     /home/msb/.cargo/git \
