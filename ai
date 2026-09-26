@@ -24,24 +24,13 @@ from microsandbox import (
     Rule,
     Sandbox,
     Secret,
+    Volume,
 )
 
 DEFAULT_IMAGE_TAG = "msb-base:latest"
 
-# Toolchain domains needed regardless of which AI CLI profile is active.
-BASE_DOMAINS = [
-    # Package registries (trim/extend per stack).
-    "registry.npmjs.org",
-    # NuGet (.NET package restore)
-    "api.nuget.org",
-    "globalcdn.nuget.org",
-    "pkgs.dev.azure.com",
-    # Azure Blob Storage — Azure Artifacts redirects .nupkg downloads here.
-    "blob.core.windows.net",
-    # Dart/Flutter (pub get; SDK tarballs come from storage.googleapis.com)
-    "pub.dev",
-    "storage.googleapis.com",
-]
+# Domains needed regardless of which AI CLI profile or stack is active.
+BASE_DOMAINS = []
 
 
 @dataclass(frozen=True)
@@ -105,6 +94,54 @@ PROFILES: dict[str, Profile] = {
 }
 
 
+@dataclass(frozen=True)
+class Stack:
+    name: str
+    mounts: tuple[
+        tuple[str, str], ...
+    ]  # (host path rel to $HOME, absolute sandbox path)
+    extra_domains: tuple[str, ...] = ()
+
+
+STACKS: dict[str, Stack] = {
+    "dotnet": Stack(
+        "dotnet",
+        ((".nuget/packages", "/home/msb/.nuget/packages"),),
+        extra_domains=(
+            "api.nuget.org",
+            "globalcdn.nuget.org",
+            "pkgs.dev.azure.com",
+            # Azure Blob Storage — Azure Artifacts redirects .nupkg downloads here.
+            "blob.core.windows.net",
+        ),
+    ),
+    "node": Stack(
+        "node",
+        ((".npm", "/home/msb/.npm"),),
+        extra_domains=("registry.npmjs.org",),
+    ),
+    "dart": Stack(
+        "dart",
+        ((".pub-cache", "/home/msb/.pub-cache"),),
+        # SDK tarballs come from storage.googleapis.com
+        extra_domains=("pub.dev", "storage.googleapis.com"),
+    ),
+    "rust": Stack(
+        "rust",
+        (
+            (".cargo/registry", "/home/msb/.cargo/registry"),
+            (".cargo/git", "/home/msb/.cargo/git"),
+        ),
+        extra_domains=("index.crates.io", "static.crates.io", "crates.io"),
+    ),
+    "python": Stack(
+        "python",
+        ((".cache/uv", "/home/msb/.cache/uv"),),
+        extra_domains=("pypi.org", "files.pythonhosted.org"),
+    ),
+}
+
+
 def build_config_patches(profile: "Profile") -> tuple[list, list[str]]:
     patches = []
     dsts = []
@@ -119,6 +156,21 @@ def build_config_patches(profile: "Profile") -> tuple[list, list[str]]:
             patches.append(Patch.copy_file(src=host_path, dst=dst))
         dsts.append(dst)
     return patches, dsts
+
+
+def build_stack_volumes(
+    stack_names: set[str],
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    volumes: dict[str, object] = {}
+    extra_domains: list[str] = []
+    for name in sorted(stack_names):
+        stack = STACKS[name]
+        for host_rel, sandbox_path in stack.mounts:
+            host_path = os.path.expanduser(f"~/{host_rel}")
+            os.makedirs(host_path, exist_ok=True)
+            volumes[sandbox_path] = Volume.bind(host_path)
+        extra_domains.extend(stack.extra_domains)
+    return volumes, tuple(extra_domains)
 
 
 def host_git_identity() -> tuple[str | None, str | None]:
@@ -258,6 +310,14 @@ async def main() -> None:
     )
     parser.add_argument("--profile", choices=sorted(PROFILES), default="copilot")
     parser.add_argument("--ref", default="master")
+    parser.add_argument(
+        "--stacks",
+        default="",
+        help=(
+            "comma-separated language/framework stacks whose global caches to "
+            f"mount from the host (or set MSB_STACKS). choices: {', '.join(sorted(STACKS))}"
+        ),
+    )
     args = parser.parse_args()
     profile = PROFILES[args.profile]
     target_branch = args.ref
@@ -267,6 +327,18 @@ async def main() -> None:
         for domain in os.environ.get("MSB_EXTRA_DOMAINS", "").split(",")
         if domain.strip()
     )
+
+    stack_names = {
+        name.strip()
+        for name in f"{args.stacks},{os.environ.get('MSB_STACKS', '')}".split(",")
+        if name.strip()
+    }
+    unknown_stacks = stack_names - STACKS.keys()
+    if unknown_stacks:
+        sys.exit(
+            f"unknown stack(s): {', '.join(sorted(unknown_stacks))}; "
+            f"choices: {', '.join(sorted(STACKS))}"
+        )
 
     token = os.environ.get(profile.token_env)
     if not token:
@@ -279,6 +351,7 @@ async def main() -> None:
     target_workdir = "/home/msb/workspace"
     sandbox_name = sandbox_name_for(workdir, profile.name)
     config_patches, config_dsts = build_config_patches(profile)
+    stack_volumes, stack_domains = build_stack_volumes(stack_names)
 
     result = subprocess.run(
         ["git", "rev-parse", target_branch],
@@ -298,7 +371,9 @@ async def main() -> None:
         cpus=2,
         memory=2048,
         replace=True,  # discard any stale sandbox of the same name
-        network=build_network(profile.extra_domains, user_extra_domains),
+        network=build_network(
+            profile.extra_domains, (*user_extra_domains, *stack_domains)
+        ),
         secrets=[
             Secret.env(
                 profile.secret_env,
@@ -310,6 +385,7 @@ async def main() -> None:
             Patch.copy_dir(src=".git", dst=f"{target_workdir}/.git"),
             *config_patches,
         ],
+        volumes=stack_volumes,
     )
 
     try:

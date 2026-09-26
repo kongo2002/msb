@@ -46,7 +46,15 @@ RUN git clone https://github.com/flutter/flutter.git --branch $FLUTTER_VERSION -
 # claude
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-ENV PATH="$PATH:$FLUTTER_HOME/bin:$PUB_CACHE/bin:/home/msb/.local/bin"
+# rust
+ENV CARGO_HOME=/home/msb/.cargo
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
+
+ENV PATH="$PATH:$FLUTTER_HOME/bin:$PUB_CACHE/bin:/home/msb/.local/bin:$CARGO_HOME/bin"
+
+# uv (python)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 RUN flutter config --no-analytics \
  && flutter precache \
@@ -68,6 +76,14 @@ RUN curl -fsSL https://aka.ms/install-artifacts-credprovider.sh | bash
 # - skip onboarding wizard on first run in the sandbox
 # - mark workspace folder as trusted
 RUN node -e "const fs=require('fs');const p='/home/msb/.claude.json';const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):{};c.hasCompletedOnboarding=true;c.projects={'/home/msb/workspace':{hasTrustDialogAccepted:true}};fs.writeFileSync(p,JSON.stringify(c,null,4));"
+
+# pre-create directories that may be later bind mounted
+RUN mkdir -p /home/msb/.nuget/packages \
+    /home/msb/.npm \
+    /home/msb/.pub-cache \
+    /home/msb/.cargo/registry \
+    /home/msb/.cargo/git \
+    /home/msb/.cache/uv
 
 ADD --chown=msb:msb ./assets/gitignore_global /home/msb/.gitignore_global
 ADD --chown=msb:msb ./assets/claude_settings.json /home/msb/.claude/settings.json
