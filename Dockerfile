@@ -46,9 +46,6 @@ RUN git clone https://github.com/flutter/flutter.git --branch $FLUTTER_VERSION -
 # claude
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# skip onboarding wizard on first run in the sandbox
-RUN node -e "const fs=require('fs');const p='/home/msb/.claude.json';const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):{};c.hasCompletedOnboarding=true;fs.writeFileSync(p,JSON.stringify(c,null,4));"
-
 ENV PATH="$PATH:$FLUTTER_HOME/bin:$PUB_CACHE/bin:/home/msb/.local/bin"
 
 RUN flutter config --no-analytics \
@@ -66,6 +63,11 @@ RUN dart pub global activate protoc_plugin ${DART_PROTOC_PLUGIN_VERSION}
 
 # azure credentials provider
 RUN curl -fsSL https://aka.ms/install-artifacts-credprovider.sh | bash
+
+# claude settings
+# - skip onboarding wizard on first run in the sandbox
+# - mark workspace folder as trusted
+RUN node -e "const fs=require('fs');const p='/home/msb/.claude.json';const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):{};c.hasCompletedOnboarding=true;c.projects={'/home/msb/workspace':{hasTrustDialogAccepted:true}};fs.writeFileSync(p,JSON.stringify(c,null,4));"
 
 ADD --chown=msb:msb ./assets/gitignore_global /home/msb/.gitignore_global
 ADD --chown=msb:msb ./assets/claude_settings.json /home/msb/.claude/settings.json
