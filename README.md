@@ -1,7 +1,8 @@
 # AI sandbox script
 
-Runs an AI coding CLI (Claude, Copilot, ...) inside an isolated [microsandbox](https://github.com/microsandbox/microsandbox),
-mirrors your current repo into it, and captures whatever the sandbox produces as a new commit
+Runs an AI coding CLI (Claude, Copilot, ...) inside an isolated
+[microsandbox](https://github.com/superradcompany/microsandbox), mirrors your
+current repo into it, and captures whatever the sandbox produces as a new commit
 on a fresh git worktree/branch on the host.
 
 ## Prerequisites
