@@ -1,0 +1,10 @@
+{
+  "theme": "dark",
+  "skipDangerousModePermissionPrompt": true,
+  "model": "sonnet",
+  "modelSettings": {
+    "claude-sonnet-5": {
+      "effortLevel": "medium"
+    }
+  }
+}

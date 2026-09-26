@@ -1,0 +1,339 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.14"
+# dependencies = [
+#   "microsandbox==0.7.3"
+# ]
+# ///
+
+import argparse
+import asyncio
+import hashlib
+import os
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+
+from microsandbox import (
+    Action,
+    Destination,
+    Network,
+    NetworkPolicy,
+    Patch,
+    Rule,
+    Sandbox,
+    Secret,
+)
+
+IMAGE_TAG = "msb-base:latest"
+
+# Toolchain domains needed regardless of which AI CLI profile is active.
+BASE_DOMAINS = [
+    # Package registries (trim/extend per stack).
+    "registry.npmjs.org",
+    # NuGet (.NET package restore)
+    "api.nuget.org",
+    "globalcdn.nuget.org",
+    "pkgs.dev.azure.com",
+    # Azure Blob Storage — Azure Artifacts redirects .nupkg downloads here.
+    "blob.core.windows.net",
+    # Dart/Flutter (pub get; SDK tarballs come from storage.googleapis.com)
+    "pub.dev",
+    "storage.googleapis.com",
+]
+
+
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    token_env: str
+    secret_env: str
+    secret_allow_domains: tuple[str, ...]
+    extra_domains: tuple[str, ...]
+    binary: str
+    binary_args: list[str]
+    config_paths: tuple[str, ...] = ()  # relative to $HOME, mirrored host -> sandbox
+
+
+PROFILES: dict[str, Profile] = {
+    "copilot": Profile(
+        name="copilot",
+        token_env="MSB_COPILOT_TOKEN",
+        secret_env="GITHUB_TOKEN",
+        secret_allow_domains=(
+            "api.githubcopilot.com",
+            "api.business.githubcopilot.com",
+            "api.github.com",
+        ),
+        extra_domains=(
+            # GitHub Copilot - auth, inference proxy, telemetry, experimentation.
+            "api.github.com",
+            "api.githubcopilot.com",
+            "api.business.githubcopilot.com",
+            "copilot-proxy.githubusercontent.com",
+            "copilot-telemetry.githubusercontent.com",
+            "default.exp-tas.com",
+            "raw.githubusercontent.com",
+            # GitHub (Copilot OAuth device login, plus tarballs/CDN below).
+            "github.com",
+            "codeload.github.com",
+            "objects.githubusercontent.com",
+            # VS Code - server download + extension marketplace/CDN (Copilot install).
+            "update.code.visualstudio.com",
+            "vscode.download.prss.microsoft.com",
+            "marketplace.visualstudio.com",
+            "vscode.dev",
+        ),
+        binary="copilot",
+        binary_args=[],
+        config_paths=(".copilot/instructions",),
+    ),
+    "claude": Profile(
+        name="claude",
+        token_env="MSB_CLAUDE_TOKEN",
+        secret_env="CLAUDE_CODE_OAUTH_TOKEN",
+        secret_allow_domains=("api.anthropic.com",),
+        extra_domains=(
+            "api.anthropic.com",
+            "platform.claude.com",
+        ),
+        binary="claude",
+        binary_args=["--dangerously-skip-permissions"],
+        config_paths=(".claude/CLAUDE.md", ".claude/skills", ".claude/agents"),
+    ),
+}
+
+
+def build_config_patches(profile: "Profile") -> tuple[list, list[str]]:
+    patches = []
+    dsts = []
+    for rel_path in profile.config_paths:
+        host_path = os.path.expanduser(f"~/{rel_path}")
+        if not os.path.exists(host_path):
+            continue
+        dst = f"/home/msb/{rel_path}"
+        if os.path.isdir(host_path):
+            patches.append(Patch.copy_dir(src=host_path, dst=dst))
+        else:
+            patches.append(Patch.copy_file(src=host_path, dst=dst))
+        dsts.append(dst)
+    return patches, dsts
+
+
+def host_git_identity() -> tuple[str | None, str | None]:
+    def get(key: str) -> str | None:
+        result = subprocess.run(["git", "config", key], capture_output=True, text=True)
+        return result.stdout.strip() or None
+
+    return get("user.name"), get("user.email")
+
+
+def create_worktree(workdir: str, base_ref: str, branch: str) -> str:
+    repo_name = os.path.basename(os.path.normpath(workdir))
+    worktree_path = f"/tmp/claude/{repo_name}-{branch}"
+    result = subprocess.run(
+        ["git", "worktree", "add", "-b", branch, worktree_path, base_ref],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        sys.exit(f"failed to create worktree: {result.stderr}")
+    return worktree_path
+
+
+def apply_diff_as_commit(
+    worktree_path: str, commit_message: str, diff_text: str
+) -> None:
+    result = subprocess.run(
+        ["git", "apply"],
+        input=diff_text,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git apply failed: {result.stderr}")
+
+    subprocess.run(["git", "add", "-A"], cwd=worktree_path, check=True)
+
+    result = subprocess.run(
+        ["git", "commit", "-m", commit_message],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git commit failed: {result.stderr}")
+
+
+def remove_empty_worktree(workdir: str, worktree_path: str, branch: str) -> None:
+    result = subprocess.run(
+        ["git", "worktree", "remove", "--force", worktree_path],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(
+            f"warning: failed to remove empty worktree {worktree_path}: {result.stderr}",
+            file=sys.stderr,
+        )
+        return
+    result = subprocess.run(
+        ["git", "branch", "-D", branch], cwd=workdir, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(
+            f"warning: failed to delete empty branch {branch}: {result.stderr}",
+            file=sys.stderr,
+        )
+
+
+def sandbox_name_for(path: str, profile_name: str) -> str:
+    digest = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
+    return f"{profile_name}-{digest}"
+
+
+async def chown_to_msb(sandbox: Sandbox, path: str, *, recursive: bool = True) -> None:
+    args = (["-R"] if recursive else []) + ["1001:1001", path]
+    result = await sandbox.exec("chown", args, user="root")
+    if result.exit_code != 0:
+        sys.exit(f"failed to change ownership of {path}: {result.stderr_text}")
+
+
+def build_network(
+    profile_extra_domains: tuple[str, ...], user_extra_domains: tuple[str, ...] = ()
+) -> Network:
+    rules = list(Rule.allow_dns())
+    for domain in (*BASE_DOMAINS, *profile_extra_domains, *user_extra_domains):
+        rules.append(Rule.allow(destination=Destination.domain(domain), port=443))
+    return Network(policy=NetworkPolicy(default_egress=Action.DENY, rules=tuple(rules)))
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "branch",
+        help="branch name for the worktree that captures the sandbox's changes",
+    )
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="copilot")
+    args = parser.parse_args()
+    profile = PROFILES[args.profile]
+
+    user_extra_domains = tuple(
+        domain.strip()
+        for domain in os.environ.get("MSB_EXTRA_DOMAINS", "").split(",")
+        if domain.strip()
+    )
+
+    token = os.environ.get(profile.token_env)
+    if not token:
+        sys.exit(f"Set {profile.token_env} in your host shell before running this.")
+
+    if not os.path.exists(".git"):
+        sys.exit("Current directory is not a git repository")
+
+    target_branch = "master"
+
+    workdir = os.getcwd()
+    target_workdir = "/home/msb/workspace"
+    sandbox_name = sandbox_name_for(workdir, profile.name)
+    config_patches, config_dsts = build_config_patches(profile)
+
+    print("> creating sandbox", file=sys.stderr)
+    sandbox = await Sandbox.create(
+        sandbox_name,
+        image=os.environ.get("MSB_IMAGE", IMAGE_TAG),
+        cpus=2,
+        memory=2048,
+        replace=True,  # discard any stale sandbox of the same name
+        network=build_network(profile.extra_domains, user_extra_domains),
+        secrets=[
+            Secret.env(
+                profile.secret_env,
+                value=token,
+                allow=list(profile.secret_allow_domains),
+            ),
+        ],
+        patches=[
+            Patch.copy_dir(src=".git", dst=f"{target_workdir}/.git"),
+            *config_patches,
+        ],
+    )
+
+    try:
+        print("> adjust HOME ownership", file=sys.stderr)
+        await chown_to_msb(sandbox, "/home/msb", recursive=False)
+
+        print("> adjust working directory ownership", file=sys.stderr)
+        await chown_to_msb(sandbox, target_workdir)
+
+        await chown_to_msb(sandbox, "/home/msb/.claude")
+
+        for dst in config_dsts:
+            await chown_to_msb(sandbox, dst)
+
+        print(f"> checking out latest {target_branch}", file=sys.stderr)
+        result = await sandbox.exec(
+            "git", ["reset", "--hard", f"origin/{target_branch}"], cwd=target_workdir
+        )
+        if result.exit_code != 0:
+            sys.exit(f"failed to reset working directory: {result.stderr_text}")
+
+        print(f"> creating worktree for branch {args.branch}", file=sys.stderr)
+        worktree_path = create_worktree(workdir, f"origin/{target_branch}", args.branch)
+
+        print("> applying host git identity", file=sys.stderr)
+        name, email = host_git_identity()
+        if name:
+            result = await sandbox.exec(
+                "git", ["config", "--global", "user.name", name], cwd=target_workdir
+            )
+            if result.exit_code != 0:
+                sys.exit(f"failed to set git user.name: {result.stderr_text}")
+        if email:
+            result = await sandbox.exec(
+                "git", ["config", "--global", "user.email", email], cwd=target_workdir
+            )
+            if result.exit_code != 0:
+                sys.exit(f"failed to set git user.email: {result.stderr_text}")
+
+        print("> dropping into CLI...", file=sys.stderr)
+        exit_code = await sandbox.attach(
+            profile.binary, profile.binary_args, cwd=target_workdir
+        )
+
+        print("> dropping into sandbox shell...", file=sys.stderr)
+        await sandbox.attach("zsh", [], cwd=target_workdir)
+
+        diff_result = await sandbox.exec("git", ["diff"], cwd=target_workdir)
+        diff_text = diff_result.stdout_text
+    finally:
+        await sandbox.stop_and_wait()
+
+    if diff_text.strip():
+        commit_message = f"WIP: {profile.name} sandbox session ({args.branch})"
+        try:
+            apply_diff_as_commit(worktree_path, commit_message, diff_text)
+        except RuntimeError as e:
+            fd, patch_path = tempfile.mkstemp(suffix=".patch", prefix=f"{args.branch}-")
+            with os.fdopen(fd, "w") as f:
+                f.write(diff_text)
+            sys.exit(f"{e}\nsandbox diff preserved at {patch_path} for manual recovery")
+        print(
+            f"> committed sandbox changes to {worktree_path} (branch {args.branch})",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "> no changes detected in sandbox, removing empty worktree", file=sys.stderr
+        )
+        remove_empty_worktree(workdir, worktree_path, args.branch)
+
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
