@@ -1,4 +1,15 @@
 {
+  "env": {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python3 /home/msb/claude-statusline.py"
+  },
   "theme": "dark",
   "skipDangerousModePermissionPrompt": true,
   "model": "sonnet",

@@ -72,5 +72,6 @@ RUN node -e "const fs=require('fs');const p='/home/msb/.claude.json';const c=fs.
 ADD --chown=msb:msb ./assets/gitignore_global /home/msb/.gitignore_global
 ADD --chown=msb:msb ./assets/claude_settings.json /home/msb/.claude/settings.json
 ADD --chown=msb:msb ./assets/zshrc /home/msb/.zshrc
+ADD --chown=msb:msb ./assets/claude-statusline.py /home/msb/claude-statusline.py
 
 CMD ["/bin/zsh"]
