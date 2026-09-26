@@ -26,7 +26,7 @@ from microsandbox import (
     Secret,
 )
 
-IMAGE_TAG = "msb-base:latest"
+DEFAULT_IMAGE_TAG = "msb-base:latest"
 
 # Toolchain domains needed regardless of which AI CLI profile is active.
 BASE_DOMAINS = [
@@ -229,8 +229,10 @@ async def main() -> None:
         help="branch name for the worktree that captures the sandbox's changes",
     )
     parser.add_argument("--profile", choices=sorted(PROFILES), default="copilot")
+    parser.add_argument("--ref", default="master")
     args = parser.parse_args()
     profile = PROFILES[args.profile]
+    target_branch = args.ref
 
     user_extra_domains = tuple(
         domain.strip()
@@ -245,8 +247,6 @@ async def main() -> None:
     if not os.path.exists(".git"):
         sys.exit("Current directory is not a git repository")
 
-    target_branch = "master"
-
     workdir = os.getcwd()
     target_workdir = "/home/msb/workspace"
     sandbox_name = sandbox_name_for(workdir, profile.name)
@@ -255,7 +255,7 @@ async def main() -> None:
     print("> creating sandbox", file=sys.stderr)
     sandbox = await Sandbox.create(
         sandbox_name,
-        image=os.environ.get("MSB_IMAGE", IMAGE_TAG),
+        image=os.environ.get("MSB_IMAGE", DEFAULT_IMAGE_TAG),
         cpus=2,
         memory=2048,
         replace=True,  # discard any stale sandbox of the same name
@@ -287,13 +287,13 @@ async def main() -> None:
 
         print(f"> checking out latest {target_branch}", file=sys.stderr)
         result = await sandbox.exec(
-            "git", ["reset", "--hard", f"origin/{target_branch}"], cwd=target_workdir
+            "git", ["reset", "--hard", target_branch], cwd=target_workdir
         )
         if result.exit_code != 0:
             sys.exit(f"failed to reset working directory: {result.stderr_text}")
 
         print(f"> creating worktree for branch {args.branch}", file=sys.stderr)
-        worktree_path = create_worktree(workdir, f"origin/{target_branch}", args.branch)
+        worktree_path = create_worktree(workdir, target_branch, args.branch)
 
         print("> applying host git identity", file=sys.stderr)
         name, email = host_git_identity()
@@ -347,3 +347,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# vim: ft=python:
