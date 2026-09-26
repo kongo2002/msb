@@ -353,7 +353,7 @@ async def main() -> None:
     config_patches, config_dsts = build_config_patches(profile)
     stack_volumes, stack_domains = build_stack_volumes(stack_names)
 
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: ASYNC221 - one-shot CLI script, no concurrent event loop work
         ["git", "rev-parse", target_branch],
         cwd=workdir,
         capture_output=True,
