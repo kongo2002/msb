@@ -131,11 +131,11 @@ def host_git_identity() -> tuple[str | None, str | None]:
     return get("user.name"), get("user.email")
 
 
-def create_worktree(workdir: str, base_ref: str, branch: str) -> str:
+def create_worktree(workdir: str, base_sha: str, branch: str) -> str:
     repo_name = os.path.basename(os.path.normpath(workdir))
     worktree_path = f"/tmp/claude/{repo_name}-{branch}"
     result = subprocess.run(
-        ["git", "worktree", "add", "-b", branch, worktree_path, base_ref],
+        ["git", "worktree", "add", "-b", branch, worktree_path, base_sha],
         cwd=workdir,
         capture_output=True,
         text=True,
@@ -146,31 +146,59 @@ def create_worktree(workdir: str, base_ref: str, branch: str) -> str:
     return worktree_path
 
 
-def apply_diff_as_commit(
-    worktree_path: str, commit_message: str, diff_text: str
-) -> None:
+async def collect_sandbox_patches(
+    sandbox: Sandbox, cwd: str, base_sha: str, wip_commit_message: str
+) -> str | None:
+    """Commits any leftover dirty state in the sandbox, then formats every
+    commit made since base_sha (individually) as a patch series for the host.
+    Returns None if nothing changed."""
+    status = await sandbox.exec("git", ["status", "--porcelain"], cwd=cwd)
+    if status.stdout_text.strip():
+        result = await sandbox.exec("git", ["add", "-A"], cwd=cwd)
+        if result.exit_code != 0:
+            sys.exit(f"failed to stage sandbox changes: {result.stderr_text}")
+        result = await sandbox.exec(
+            "git", ["commit", "-m", wip_commit_message], cwd=cwd
+        )
+        if result.exit_code != 0:
+            sys.exit(f"failed to commit sandbox changes: {result.stderr_text}")
+
+    count_result = await sandbox.exec(
+        "git", ["rev-list", "--count", f"{base_sha}..HEAD"], cwd=cwd
+    )
+    if count_result.exit_code != 0:
+        sys.exit(f"failed to inspect sandbox history: {count_result.stderr_text}")
+    if int(count_result.stdout_text.strip() or "0") == 0:
+        return None
+
+    patch_result = await sandbox.exec(
+        "git",
+        ["format-patch", "--binary", "--stdout", f"{base_sha}..HEAD"],
+        cwd=cwd,
+    )
+    if patch_result.exit_code != 0:
+        sys.exit(f"failed to format sandbox commits: {patch_result.stderr_text}")
+    return patch_result.stdout_text
+
+
+def apply_patches_to_worktree(worktree_path: str, patch_text: str) -> None:
     result = subprocess.run(
-        ["git", "apply"],
-        input=diff_text,
+        ["git", "am"],
+        input=patch_text,
         cwd=worktree_path,
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"git apply failed: {result.stderr}")
-
-    subprocess.run(["git", "add", "-A"], cwd=worktree_path, check=True)
-
-    result = subprocess.run(
-        ["git", "commit", "-m", commit_message],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git commit failed: {result.stderr}")
+        subprocess.run(["git", "am", "--abort"], cwd=worktree_path, check=False)
+        fd, patch_path = tempfile.mkstemp(suffix=".patch", prefix="ai-sandbox-")
+        with os.fdopen(fd, "w") as f:
+            f.write(patch_text)
+        sys.exit(
+            f"git am failed: {result.stderr}\n"
+            f"sandbox patches preserved at {patch_path} for manual recovery"
+        )
 
 
 def remove_empty_worktree(workdir: str, worktree_path: str, branch: str) -> None:
@@ -252,6 +280,17 @@ async def main() -> None:
     sandbox_name = sandbox_name_for(workdir, profile.name)
     config_patches, config_dsts = build_config_patches(profile)
 
+    result = subprocess.run(
+        ["git", "rev-parse", target_branch],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.exit(f"failed to resolve {target_branch}: {result.stderr}")
+    base_sha = result.stdout.strip()
+
     print("> creating sandbox", file=sys.stderr)
     sandbox = await Sandbox.create(
         sandbox_name,
@@ -293,7 +332,7 @@ async def main() -> None:
             sys.exit(f"failed to reset working directory: {result.stderr_text}")
 
         print(f"> creating worktree for branch {args.branch}", file=sys.stderr)
-        worktree_path = create_worktree(workdir, target_branch, args.branch)
+        worktree_path = create_worktree(workdir, base_sha, args.branch)
 
         print("> applying host git identity", file=sys.stderr)
         name, email = host_git_identity()
@@ -318,22 +357,17 @@ async def main() -> None:
         print("> dropping into sandbox shell...", file=sys.stderr)
         await sandbox.attach("zsh", [], cwd=target_workdir)
 
-        diff_result = await sandbox.exec("git", ["diff"], cwd=target_workdir)
-        diff_text = diff_result.stdout_text
+        wip_commit_message = f"WIP: {profile.name} sandbox session ({args.branch})"
+        patch_text = await collect_sandbox_patches(
+            sandbox, target_workdir, base_sha, wip_commit_message
+        )
     finally:
         await sandbox.stop_and_wait()
 
-    if diff_text.strip():
-        commit_message = f"WIP: {profile.name} sandbox session ({args.branch})"
-        try:
-            apply_diff_as_commit(worktree_path, commit_message, diff_text)
-        except RuntimeError as e:
-            fd, patch_path = tempfile.mkstemp(suffix=".patch", prefix=f"{args.branch}-")
-            with os.fdopen(fd, "w") as f:
-                f.write(diff_text)
-            sys.exit(f"{e}\nsandbox diff preserved at {patch_path} for manual recovery")
+    if patch_text is not None:
+        apply_patches_to_worktree(worktree_path, patch_text)
         print(
-            f"> committed sandbox changes to {worktree_path} (branch {args.branch})",
+            f"> transplanted sandbox commits onto {worktree_path} (branch {args.branch})",
             file=sys.stderr,
         )
     else:

@@ -31,9 +31,10 @@ ai <branch> [--profile copilot|claude]
 
 On exit:
 
-- diffs the sandbox working directory against its checkout
-- applies that diff as a single commit (`WIP: <profile> sandbox session (<branch>)`) onto the
-  new worktree/branch
+- if the sandbox working directory is dirty, commits the leftover changes there as
+  `WIP: <profile> sandbox session (<branch>)`
+- transplants every commit made in the sandbox since it started (individually, history intact)
+  onto the new worktree/branch via `git format-patch` / `git am`
 - removes the worktree and branch again if nothing changed
 
 ## Configuration
