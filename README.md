@@ -21,13 +21,16 @@ docker save msb-base:latest | msb load
 ## Usage
 
 ```sh
-ai <branch> [--profile copilot|claude]
+ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python]
 ```
 
 - `<branch>` - name of the branch/worktree created under `/tmp/claude/<repo-name>-<branch>` to
   hold whatever the sandbox session changes.
 - `--profile` - which CLI to launch inside the sandbox (default: `copilot`).
 - `--ref` - optional reference branch to start off of (default: `master`).
+- `--stacks` - comma-separated language/framework stacks to enable (or set `MSB_STACKS`).
+  For each stack, mounts its host package cache into the sandbox and opens network egress
+  to its package registry. Choices: `dotnet`, `node`, `dart`, `rust`, `python`.
 
 On exit:
 
@@ -46,6 +49,7 @@ Set via environment variables on the host before running `ai`:
 - `MSB_IMAGE` - override the sandbox image (default: `msb-base:latest`).
 - `MSB_EXTRA_DOMAINS` - comma-separated list of extra domains to allow through the sandbox's
   network egress policy, on top of the profile's defaults.
+- `MSB_STACKS` - comma-separated stacks, alternative to `--stacks`. Both are merged together.
 
 Each profile also mirrors selected host config into the sandbox if present (e.g.
 `~/.claude/CLAUDE.md`, `~/.claude/skills`, `~/.claude/agents` for the `claude` profile;
