@@ -75,7 +75,7 @@ PROFILES: dict[str, Profile] = {
             "vscode.dev",
         ),
         binary="copilot",
-        binary_args=[],
+        binary_args=["--allow-all", "--disable-mcp-server", "github-mcp-server"],
         config_paths=(".copilot/instructions",),
     ),
     "claude": Profile(
@@ -309,7 +309,9 @@ async def main() -> None:
         help="branch name for the worktree that captures the sandbox's changes",
     )
     parser.add_argument("--profile", choices=sorted(PROFILES), default="copilot")
-    parser.add_argument("--ref", default="master")
+    parser.add_argument(
+        "--ref", help="reference branch to base the work off of (or set MSB_REFERENCE)"
+    )
     parser.add_argument(
         "--stacks",
         default="",
@@ -320,7 +322,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
     profile = PROFILES[args.profile]
-    target_branch = args.ref
+    target_branch = args.ref or os.environ.get("MSB_REFERENCE", None) or "master"
 
     user_extra_domains = tuple(
         domain.strip()
@@ -396,6 +398,7 @@ async def main() -> None:
         await chown_to_msb(sandbox, target_workdir)
 
         await chown_to_msb(sandbox, "/home/msb/.claude")
+        await chown_to_msb(sandbox, "/home/msb/.copilot")
 
         for dst in config_dsts:
             await chown_to_msb(sandbox, dst)

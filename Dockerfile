@@ -94,5 +94,7 @@ ADD --chown=msb:msb ./assets/gitignore_global /home/msb/.gitignore_global
 ADD --chown=msb:msb ./assets/claude_settings.json /home/msb/.claude/settings.json
 ADD --chown=msb:msb ./assets/zshrc /home/msb/.zshrc
 ADD --chown=msb:msb ./assets/claude-statusline.py /home/msb/claude-statusline.py
+ADD --chown=msb:msb ./assets/copilot_config.json /home/msb/.copilot/config.json
+ADD --chown=msb:msb ./assets/copilot_settings.json /home/msb/.copilot/settings.json
 
 CMD ["/bin/zsh"]
