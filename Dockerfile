@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # general dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git unzip wget xz-utils zip ca-certificates nodejs ripgrep fzf less zsh vim \
+    curl git unzip xz-utils zip ca-certificates nodejs ripgrep less zsh vim \
     && rm -rf /var/lib/apt/lists/*
 
 # pnpm
@@ -91,9 +91,13 @@ RUN mkdir -p /home/msb/.nuget/packages \
     /home/msb/.cargo/git \
     /home/msb/.cache/uv
 
+# fzf (the version shipped with ubuntu is _old_)
+ADD --chown=msb:msb ./assets/zshrc /home/msb/.zshrc
+RUN git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf \
+    && ~/.fzf/install --all
+
 ADD --chown=msb:msb ./assets/gitignore_global /home/msb/.gitignore_global
 ADD --chown=msb:msb ./assets/claude_settings.json /home/msb/.claude/settings.json
-ADD --chown=msb:msb ./assets/zshrc /home/msb/.zshrc
 ADD --chown=msb:msb ./assets/claude-statusline.py /home/msb/claude-statusline.py
 ADD --chown=msb:msb ./assets/copilot_config.json /home/msb/.copilot/config.json
 ADD --chown=msb:msb ./assets/copilot_settings.json /home/msb/.copilot/settings.json

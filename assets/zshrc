@@ -59,13 +59,5 @@ export LESS='-R'
 # aliases
 alias ls='ls --color=auto'
 alias ll='ls -lh'
-alias la='ls -lha'
+alias l='ls -lha'
 alias grep='grep --color=auto'
-
-# fzf integration, if installed
-for fzf_init in /usr/share/doc/fzf/examples/key-bindings.zsh /usr/share/fzf/key-bindings.zsh; do
-    [[ -r "$fzf_init" ]] && source "$fzf_init"
-done
-for fzf_comp in /usr/share/doc/fzf/examples/completion.zsh /usr/share/fzf/completion.zsh; do
-    [[ -r "$fzf_comp" ]] && source "$fzf_comp"
-done
