@@ -23,11 +23,22 @@ from microsandbox import (
     Patch,
     Rule,
     Sandbox,
+    SandboxNotFoundError,
+    SandboxStatus,
     Secret,
     Volume,
 )
 
 DEFAULT_IMAGE_TAG = "msb-base:latest"
+
+# Statuses of a same-named leftover sandbox we can safely reconnect to instead
+# of tearing down and recreating from scratch.
+RESUMABLE_STATUSES = frozenset(
+    {SandboxStatus.RUNNING, SandboxStatus.PAUSED, SandboxStatus.STOPPED}
+)
+
+KEEP_ALIVE_MARKER = "/home/msb/.ai-keep-alive"
+BASE_SHA_FILE = "/home/msb/.ai-sandbox-base-sha"
 
 # Domains needed regardless of which AI CLI profile or stack is active.
 BASE_DOMAINS = [
@@ -239,6 +250,10 @@ def host_git_identity() -> tuple[str | None, str | None]:
 def create_worktree(workdir: str, base_sha: str, branch: str) -> str:
     repo_name = os.path.basename(os.path.normpath(workdir))
     worktree_path = f"/tmp/claude/{repo_name}-{branch}"
+    if os.path.isdir(worktree_path):
+        # left behind by a prior keep-alive round for this branch - reuse it
+        # so already-transplanted commits aren't lost.
+        return worktree_path
     result = subprocess.run(
         ["git", "worktree", "add", "-b", branch, worktree_path, base_sha],
         cwd=workdir,
@@ -335,9 +350,6 @@ def remove_empty_worktree(workdir: str, worktree_path: str, branch: str) -> None
 
 
 def sandbox_name_for(path: str, profile_name: str, branch: str) -> str:
-    # branch is part of the digest so concurrent `ai` runs in the same repo
-    # (different worktrees/branches) don't collide on sandbox name and get
-    # torn down by each other's replace=True.
     digest = hashlib.sha256(f"{os.path.abspath(path)}:{branch}".encode()).hexdigest()[
         :10
     ]
@@ -431,16 +443,11 @@ async def main() -> None:
         context_sandbox_path, context_volume = build_context_repo_volume(args.context)
         stack_volumes.update(context_volume)
 
-    result = subprocess.run(  # noqa: ASYNC221 - one-shot CLI script, no concurrent event loop work
-        ["git", "rev-parse", target_branch],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        sys.exit(f"failed to resolve {target_branch}: {result.stderr}")
-    base_sha = result.stdout.strip()
+    try:
+        existing = await Sandbox.get(sandbox_name)
+        resuming = existing.status in RESUMABLE_STATUSES
+    except SandboxNotFoundError:
+        resuming = False
 
     if context_sandbox_path:
         print(
@@ -451,13 +458,12 @@ async def main() -> None:
     if local_claude_md_patches:
         print("> mirroring untracked local CLAUDE.md into sandbox", file=sys.stderr)
 
-    print("> creating sandbox", file=sys.stderr)
-    sandbox = await Sandbox.create(
+    print("> resuming sandbox" if resuming else "> creating sandbox", file=sys.stderr)
+    sandbox = await Sandbox.connect_or_create(
         sandbox_name,
         image=os.environ.get("MSB_IMAGE", DEFAULT_IMAGE_TAG),
         cpus=2,
         memory=2048,
-        replace=True,  # discard any stale sandbox of the same name
         network=build_network(
             profile.extra_domains, (*user_extra_domains, *stack_domains)
         ),
@@ -476,43 +482,69 @@ async def main() -> None:
         volumes=stack_volumes,
     )
 
+    keep_alive = False
     try:
-        print("> adjust HOME ownership", file=sys.stderr)
-        await chown_to_msb(sandbox, "/home/msb", recursive=False)
+        if resuming:
+            # base_sha was pinned by the session that provisioned this sandbox;
+            # re-resolving target_branch here would drift from what's checked out.
+            result = await sandbox.exec("cat", [BASE_SHA_FILE])
+            if result.exit_code != 0:
+                sys.exit(f"failed to read pinned base sha from sandbox: {result.stderr_text}")
+            base_sha = result.stdout_text.strip()
+        else:
+            result = subprocess.run(  # noqa: ASYNC221 - one-shot CLI script, no concurrent event loop work
+                ["git", "rev-parse", target_branch],
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                sys.exit(f"failed to resolve {target_branch}: {result.stderr}")
+            base_sha = result.stdout.strip()
 
-        print("> adjust working directory ownership", file=sys.stderr)
-        await chown_to_msb(sandbox, target_workdir)
+            print("> adjust HOME ownership", file=sys.stderr)
+            await chown_to_msb(sandbox, "/home/msb", recursive=False)
 
-        await chown_to_msb(sandbox, "/home/msb/.claude")
-        await chown_to_msb(sandbox, "/home/msb/.copilot")
+            print("> adjust working directory ownership", file=sys.stderr)
+            await chown_to_msb(sandbox, target_workdir)
 
-        for dst in config_dsts:
-            await chown_to_msb(sandbox, dst)
+            await chown_to_msb(sandbox, "/home/msb/.claude")
+            await chown_to_msb(sandbox, "/home/msb/.copilot")
 
-        print(f"> checking out latest {target_branch}", file=sys.stderr)
-        result = await sandbox.exec(
-            "git", ["reset", "--hard", target_branch], cwd=target_workdir
-        )
-        if result.exit_code != 0:
-            sys.exit(f"failed to reset working directory: {result.stderr_text}")
+            for dst in config_dsts:
+                await chown_to_msb(sandbox, dst)
+
+            print(f"> checking out latest {target_branch}", file=sys.stderr)
+            result = await sandbox.exec(
+                "git", ["reset", "--hard", target_branch], cwd=target_workdir
+            )
+            if result.exit_code != 0:
+                sys.exit(f"failed to reset working directory: {result.stderr_text}")
+
+            result = await sandbox.exec(
+                "sh", ["-c", f"echo {base_sha} > {BASE_SHA_FILE}"]
+            )
+            if result.exit_code != 0:
+                sys.exit(f"failed to pin base sha in sandbox: {result.stderr_text}")
+
+            print("> applying host git identity", file=sys.stderr)
+            name, email = host_git_identity()
+            if name:
+                result = await sandbox.exec(
+                    "git", ["config", "--global", "user.name", name], cwd=target_workdir
+                )
+                if result.exit_code != 0:
+                    sys.exit(f"failed to set git user.name: {result.stderr_text}")
+            if email:
+                result = await sandbox.exec(
+                    "git", ["config", "--global", "user.email", email], cwd=target_workdir
+                )
+                if result.exit_code != 0:
+                    sys.exit(f"failed to set git user.email: {result.stderr_text}")
 
         print(f"> creating worktree for branch {args.branch}", file=sys.stderr)
         worktree_path = create_worktree(workdir, base_sha, args.branch)
-
-        print("> applying host git identity", file=sys.stderr)
-        name, email = host_git_identity()
-        if name:
-            result = await sandbox.exec(
-                "git", ["config", "--global", "user.name", name], cwd=target_workdir
-            )
-            if result.exit_code != 0:
-                sys.exit(f"failed to set git user.name: {result.stderr_text}")
-        if email:
-            result = await sandbox.exec(
-                "git", ["config", "--global", "user.email", email], cwd=target_workdir
-            )
-            if result.exit_code != 0:
-                sys.exit(f"failed to set git user.email: {result.stderr_text}")
 
         binary_args = profile.binary_args
         if not args.no_memory:
@@ -523,15 +555,36 @@ async def main() -> None:
             profile.binary, binary_args, cwd=target_workdir
         )
 
-        print("> dropping into sandbox shell...", file=sys.stderr)
+        print(
+            "> dropping into sandbox shell... (run `keep-alive` instead of `exit` "
+            "to keep this sandbox around for further iteration)",
+            file=sys.stderr,
+        )
         await sandbox.attach("zsh", [], cwd=target_workdir)
+
+        marker_check = await sandbox.exec("test", ["-f", KEEP_ALIVE_MARKER])
+        keep_alive = marker_check.exit_code == 0
+        if keep_alive:
+            await sandbox.exec("rm", ["-f", KEEP_ALIVE_MARKER])
 
         wip_commit_message = f"WIP: {profile.name} sandbox session ({args.branch})"
         patch_text = await collect_sandbox_patches(
             sandbox, target_workdir, base_sha, wip_commit_message
         )
+
+        if keep_alive and patch_text is not None:
+            # re-pin so the next round only collects commits made after this transplant
+            head_result = await sandbox.exec("git", ["rev-parse", "HEAD"], cwd=target_workdir)
+            if head_result.exit_code != 0:
+                sys.exit(f"failed to read sandbox HEAD: {head_result.stderr_text}")
+            pin_result = await sandbox.exec(
+                "sh", ["-c", f"echo {head_result.stdout_text.strip()} > {BASE_SHA_FILE}"]
+            )
+            if pin_result.exit_code != 0:
+                sys.exit(f"failed to re-pin base sha in sandbox: {pin_result.stderr_text}")
     finally:
-        await sandbox.stop_and_wait()
+        if not keep_alive:
+            await sandbox.destroy()
 
     if patch_text is not None:
         apply_patches_to_worktree(worktree_path, patch_text)
@@ -544,6 +597,12 @@ async def main() -> None:
             "> no changes detected in sandbox, removing empty worktree", file=sys.stderr
         )
         remove_empty_worktree(workdir, worktree_path, args.branch)
+
+    if keep_alive:
+        print(
+            f"> sandbox left running as '{sandbox_name}' - rerun the same command to resume",
+            file=sys.stderr,
+        )
 
     sys.exit(exit_code)
 
