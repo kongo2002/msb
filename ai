@@ -173,6 +173,16 @@ def build_stack_volumes(
     return volumes, tuple(extra_domains)
 
 
+def build_context_repo_volume(raw_path: str) -> tuple[str, dict[str, object]]:
+    host_path = os.path.abspath(os.path.expanduser(raw_path))
+    if not os.path.isdir(host_path):
+        sys.exit(f"context repo path does not exist or is not a directory: {raw_path}")
+    if not os.path.exists(os.path.join(host_path, ".git")):
+        sys.exit(f"context repo path is not a git repository (no .git found): {raw_path}")
+    sandbox_path = f"/home/msb/context/{os.path.basename(host_path)}"
+    return sandbox_path, {sandbox_path: Volume.bind(host_path, readonly=True)}
+
+
 def host_git_identity() -> tuple[str | None, str | None]:
     def get(key: str) -> str | None:
         result = subprocess.run(
@@ -320,6 +330,10 @@ async def main() -> None:
             f"mount from the host (or set MSB_STACKS). choices: {', '.join(sorted(STACKS))}"
         ),
     )
+    parser.add_argument(
+        "--context",
+        help="path to a second, separate host git repo to mount read-only for reference",
+    )
     args = parser.parse_args()
     profile = PROFILES[args.profile]
     target_branch = args.ref or os.environ.get("MSB_REFERENCE", None) or "master"
@@ -355,6 +369,11 @@ async def main() -> None:
     config_patches, config_dsts = build_config_patches(profile)
     stack_volumes, stack_domains = build_stack_volumes(stack_names)
 
+    context_sandbox_path = None
+    if args.context:
+        context_sandbox_path, context_volume = build_context_repo_volume(args.context)
+        stack_volumes.update(context_volume)
+
     result = subprocess.run(  # noqa: ASYNC221 - one-shot CLI script, no concurrent event loop work
         ["git", "rev-parse", target_branch],
         cwd=workdir,
@@ -365,6 +384,9 @@ async def main() -> None:
     if result.returncode != 0:
         sys.exit(f"failed to resolve {target_branch}: {result.stderr}")
     base_sha = result.stdout.strip()
+
+    if context_sandbox_path:
+        print(f"> mounting context repo at {context_sandbox_path} (read-only)", file=sys.stderr)
 
     print("> creating sandbox", file=sys.stderr)
     sandbox = await Sandbox.create(
