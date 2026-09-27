@@ -203,7 +203,8 @@ MEMORY_INSTRUCTIONS = (
     "Read it now. When the user gives you a durable, project-independent instruction - a "
     "preference, a correction, a habit that should carry over to future sessions - "
     "append a short bullet to it. Keep entries terse, one bullet per learning. Do not record "
-    "anything specific to this project or this task."
+    "anything specific to this project or this task. Ask the user for confirmation before "
+    "modifying the file."
 )
 
 
