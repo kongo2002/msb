@@ -40,6 +40,14 @@ RESUMABLE_STATUSES = frozenset(
 KEEP_ALIVE_MARKER = "/home/msb/.ai-keep-alive"
 BASE_SHA_FILE = "/home/msb/.ai-sandbox-base-sha"
 
+_verbose = False
+
+
+def log(msg: str) -> None:
+    if _verbose:
+        print(msg, file=sys.stderr)
+
+
 # Domains needed regardless of which AI CLI profile or stack is active.
 BASE_DOMAINS = [
     # GitHub - repo access, OAuth device login, tarballs/CDN (e.g. uv-managed tool downloads).
@@ -399,7 +407,14 @@ async def main() -> None:
         action="store_true",
         help="disable the persistent cross-project agent memory mount",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="print sandbox setup/progress steps (quiet by default)",
+    )
     args = parser.parse_args()
+    global _verbose
+    _verbose = args.verbose
     profile = PROFILES[args.profile]
     target_branch = args.ref or os.environ.get("MSB_REFERENCE", None) or "master"
 
@@ -450,15 +465,12 @@ async def main() -> None:
         resuming = False
 
     if context_sandbox_path:
-        print(
-            f"> mounting context repo at {context_sandbox_path} (read-only)",
-            file=sys.stderr,
-        )
+        log(f"> mounting context repo at {context_sandbox_path} (read-only)")
 
     if local_claude_md_patches:
-        print("> mirroring untracked local CLAUDE.md into sandbox", file=sys.stderr)
+        log("> mirroring untracked local CLAUDE.md into sandbox")
 
-    print("> resuming sandbox" if resuming else "> creating sandbox", file=sys.stderr)
+    log("> resuming sandbox" if resuming else "> creating sandbox")
     sandbox = await Sandbox.connect_or_create(
         sandbox_name,
         image=os.environ.get("MSB_IMAGE", DEFAULT_IMAGE_TAG),
@@ -489,7 +501,9 @@ async def main() -> None:
             # re-resolving target_branch here would drift from what's checked out.
             result = await sandbox.exec("cat", [BASE_SHA_FILE])
             if result.exit_code != 0:
-                sys.exit(f"failed to read pinned base sha from sandbox: {result.stderr_text}")
+                sys.exit(
+                    f"failed to read pinned base sha from sandbox: {result.stderr_text}"
+                )
             base_sha = result.stdout_text.strip()
         else:
             result = subprocess.run(  # noqa: ASYNC221 - one-shot CLI script, no concurrent event loop work
@@ -503,10 +517,10 @@ async def main() -> None:
                 sys.exit(f"failed to resolve {target_branch}: {result.stderr}")
             base_sha = result.stdout.strip()
 
-            print("> adjust HOME ownership", file=sys.stderr)
+            log("> adjust HOME ownership")
             await chown_to_msb(sandbox, "/home/msb", recursive=False)
 
-            print("> adjust working directory ownership", file=sys.stderr)
+            log("> adjust working directory ownership")
             await chown_to_msb(sandbox, target_workdir)
 
             await chown_to_msb(sandbox, "/home/msb/.claude")
@@ -515,7 +529,7 @@ async def main() -> None:
             for dst in config_dsts:
                 await chown_to_msb(sandbox, dst)
 
-            print(f"> checking out latest {target_branch}", file=sys.stderr)
+            log(f"> checking out latest {target_branch}")
             result = await sandbox.exec(
                 "git", ["reset", "--hard", target_branch], cwd=target_workdir
             )
@@ -528,7 +542,7 @@ async def main() -> None:
             if result.exit_code != 0:
                 sys.exit(f"failed to pin base sha in sandbox: {result.stderr_text}")
 
-            print("> applying host git identity", file=sys.stderr)
+            log("> applying host git identity")
             name, email = host_git_identity()
             if name:
                 result = await sandbox.exec(
@@ -538,19 +552,21 @@ async def main() -> None:
                     sys.exit(f"failed to set git user.name: {result.stderr_text}")
             if email:
                 result = await sandbox.exec(
-                    "git", ["config", "--global", "user.email", email], cwd=target_workdir
+                    "git",
+                    ["config", "--global", "user.email", email],
+                    cwd=target_workdir,
                 )
                 if result.exit_code != 0:
                     sys.exit(f"failed to set git user.email: {result.stderr_text}")
 
-        print(f"> creating worktree for branch {args.branch}", file=sys.stderr)
+        log(f"> creating worktree for branch {args.branch}")
         worktree_path = create_worktree(workdir, base_sha, args.branch)
 
         binary_args = profile.binary_args
         if not args.no_memory:
             binary_args = [*binary_args, profile.memory_flag, MEMORY_INSTRUCTIONS]
 
-        print("> dropping into CLI...", file=sys.stderr)
+        log("> dropping into CLI...")
         exit_code = await sandbox.attach(
             profile.binary, binary_args, cwd=target_workdir
         )
@@ -574,14 +590,19 @@ async def main() -> None:
 
         if keep_alive and patch_text is not None:
             # re-pin so the next round only collects commits made after this transplant
-            head_result = await sandbox.exec("git", ["rev-parse", "HEAD"], cwd=target_workdir)
+            head_result = await sandbox.exec(
+                "git", ["rev-parse", "HEAD"], cwd=target_workdir
+            )
             if head_result.exit_code != 0:
                 sys.exit(f"failed to read sandbox HEAD: {head_result.stderr_text}")
             pin_result = await sandbox.exec(
-                "sh", ["-c", f"echo {head_result.stdout_text.strip()} > {BASE_SHA_FILE}"]
+                "sh",
+                ["-c", f"echo {head_result.stdout_text.strip()} > {BASE_SHA_FILE}"],
             )
             if pin_result.exit_code != 0:
-                sys.exit(f"failed to re-pin base sha in sandbox: {pin_result.stderr_text}")
+                sys.exit(
+                    f"failed to re-pin base sha in sandbox: {pin_result.stderr_text}"
+                )
     finally:
         if not keep_alive:
             await sandbox.destroy()
