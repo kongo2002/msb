@@ -32,6 +32,8 @@ ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python]
 - `--stacks` - comma-separated language/framework stacks to enable (or set `MSB_STACKS`).
   For each stack, mounts its host package cache into the sandbox and opens network egress
   to its package registry. Choices: `dotnet`, `node`, `dart`, `rust`, `python`.
+- `--context` - pass an additional git repository as a context/reference which
+  will be mounted read-only into the sandbox
 
 On exit:
 
