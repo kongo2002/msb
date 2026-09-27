@@ -30,7 +30,12 @@ from microsandbox import (
 DEFAULT_IMAGE_TAG = "msb-base:latest"
 
 # Domains needed regardless of which AI CLI profile or stack is active.
-BASE_DOMAINS = []
+BASE_DOMAINS = [
+    # GitHub - repo access, OAuth device login, tarballs/CDN (e.g. uv-managed tool downloads).
+    "github.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+]
 
 
 @dataclass(frozen=True)
@@ -64,10 +69,6 @@ PROFILES: dict[str, Profile] = {
             "copilot-telemetry.githubusercontent.com",
             "default.exp-tas.com",
             "raw.githubusercontent.com",
-            # GitHub (Copilot OAuth device login, plus tarballs/CDN below).
-            "github.com",
-            "codeload.github.com",
-            "objects.githubusercontent.com",
             # VS Code - server download + extension marketplace/CDN (Copilot install).
             "update.code.visualstudio.com",
             "vscode.download.prss.microsoft.com",
