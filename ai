@@ -292,8 +292,11 @@ def remove_empty_worktree(workdir: str, worktree_path: str, branch: str) -> None
         )
 
 
-def sandbox_name_for(path: str, profile_name: str) -> str:
-    digest = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
+def sandbox_name_for(path: str, profile_name: str, branch: str) -> str:
+    # branch is part of the digest so concurrent `ai` runs in the same repo
+    # (different worktrees/branches) don't collide on sandbox name and get
+    # torn down by each other's replace=True.
+    digest = hashlib.sha256(f"{os.path.abspath(path)}:{branch}".encode()).hexdigest()[:10]
     return f"{profile_name}-{digest}"
 
 
@@ -366,7 +369,7 @@ async def main() -> None:
 
     workdir = os.getcwd()
     target_workdir = "/home/msb/workspace"
-    sandbox_name = sandbox_name_for(workdir, profile.name)
+    sandbox_name = sandbox_name_for(workdir, profile.name, args.branch)
     config_patches, config_dsts = build_config_patches(profile)
     stack_volumes, stack_domains = build_stack_volumes(stack_names)
 
