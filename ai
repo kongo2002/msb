@@ -159,6 +159,25 @@ def build_config_patches(profile: "Profile") -> tuple[list, list[str]]:
     return patches, dsts
 
 
+def build_local_claude_md_patch(workdir: str, target_workdir: str) -> list:
+    # only .git is mirrored + checked out via `git reset --hard`, so an
+    # untracked (local-only, e.g. gitignored) CLAUDE.md never reaches the
+    # sandbox otherwise
+    host_path = os.path.join(workdir, "CLAUDE.md")
+    if not os.path.isfile(host_path):
+        return []
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "CLAUDE.md"],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return []  # tracked - git reset --hard already brings it in
+    return [Patch.copy_file(src=host_path, dst=f"{target_workdir}/CLAUDE.md")]
+
+
 def build_stack_volumes(
     stack_names: set[str],
 ) -> tuple[dict[str, object], tuple[str, ...]]:
@@ -371,6 +390,7 @@ async def main() -> None:
     target_workdir = "/home/msb/workspace"
     sandbox_name = sandbox_name_for(workdir, profile.name, args.branch)
     config_patches, config_dsts = build_config_patches(profile)
+    local_claude_md_patches = build_local_claude_md_patch(workdir, target_workdir)
     stack_volumes, stack_domains = build_stack_volumes(stack_names)
 
     context_sandbox_path = None
@@ -392,6 +412,9 @@ async def main() -> None:
     if context_sandbox_path:
         print(f"> mounting context repo at {context_sandbox_path} (read-only)", file=sys.stderr)
 
+    if local_claude_md_patches:
+        print("> mirroring untracked local CLAUDE.md into sandbox", file=sys.stderr)
+
     print("> creating sandbox", file=sys.stderr)
     sandbox = await Sandbox.create(
         sandbox_name,
@@ -412,6 +435,7 @@ async def main() -> None:
         patches=[
             Patch.copy_dir(src=".git", dst=f"{target_workdir}/.git"),
             *config_patches,
+            *local_claude_md_patches,
         ],
         volumes=stack_volumes,
     )

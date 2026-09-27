@@ -58,4 +58,8 @@ Each profile also mirrors selected host config into the sandbox if present (e.g.
 `~/.claude/CLAUDE.md`, `~/.claude/skills`, `~/.claude/agents` for the `claude` profile;
 `~/.copilot/instructions` for `copilot`).
 
+If the repo you're running `ai` in has a repo-root `CLAUDE.md` that's untracked
+(e.g. deliberately gitignored, kept local-only), it's mirrored into the sandbox too -
+otherwise only committed files reach the sandbox.
+
 Your host git identity (`user.name`/`user.email`) is copied into the sandbox automatically.
