@@ -34,6 +34,7 @@ ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python]
   to its package registry. Choices: `dotnet`, `node`, `dart`, `rust`, `python`.
 - `--context` - pass an additional git repository as a context/reference which
   will be mounted read-only into the sandbox
+- `--no-memory` - disable the persistent cross-project agent memory mount (see below)
 
 On exit:
 
@@ -63,3 +64,19 @@ If the repo you're running `ai` in has a repo-root `CLAUDE.md` that's untracked
 otherwise only committed files reach the sandbox.
 
 Your host git identity (`user.name`/`user.email`) is copied into the sandbox automatically.
+
+## Agent memory
+
+Each profile gets a persistent, cross-project memory file, bind-mounted
+read-write into every sandbox session at `/home/msb/.ai-memory/MEMORY.md`,
+backed by `~/.msb/memory/<profile>/MEMORY.md` on the host. It survives across
+sandboxes and across repos - unlike everything else in the sandbox, it isn't
+torn down when the session ends.
+
+At session start, the agent is told (via `claude`'s `--append-system-prompt`,
+or `copilot`'s `-i` first-turn prompt) to read that file and to append a
+short bullet whenever the user gives it a durable, project-independent
+instruction (a preference, a correction, a habit to carry into unrelated
+future projects). Repo- or task-specific detail doesn't belong there.
+
+Disable this with `--no-memory` for a given run.

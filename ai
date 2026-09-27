@@ -47,6 +47,7 @@ class Profile:
     extra_domains: tuple[str, ...]
     binary: str
     binary_args: list[str]
+    memory_flag: str  # CLI flag that takes a single dynamic instruction string
     config_paths: tuple[str, ...] = ()  # relative to $HOME, mirrored host -> sandbox
 
 
@@ -77,6 +78,7 @@ PROFILES: dict[str, Profile] = {
         ),
         binary="copilot",
         binary_args=["--allow-all", "--disable-mcp-server", "github-mcp-server"],
+        memory_flag="-i",  # no system-prompt append flag; runs as the first turn instead
         config_paths=(".copilot/instructions",),
     ),
     "claude": Profile(
@@ -90,6 +92,7 @@ PROFILES: dict[str, Profile] = {
         ),
         binary="claude",
         binary_args=["--dangerously-skip-permissions"],
+        memory_flag="--append-system-prompt",
         config_paths=(".claude/CLAUDE.md", ".claude/skills", ".claude/agents"),
     ),
 }
@@ -193,12 +196,31 @@ def build_stack_volumes(
     return volumes, tuple(extra_domains)
 
 
+MEMORY_SANDBOX_PATH = "/home/msb/.ai-memory"
+
+MEMORY_INSTRUCTIONS = (
+    f"You have a persistent, cross-project memory file at {MEMORY_SANDBOX_PATH}/MEMORY.md. "
+    "Read it now. When the user gives you a durable, project-independent instruction - a "
+    "preference, a correction, a habit that should carry over to future sessions - "
+    "append a short bullet to it. Keep entries terse, one bullet per learning. Do not record "
+    "anything specific to this project or this task."
+)
+
+
+def build_memory_volume(profile: "Profile") -> dict[str, object]:
+    host_path = os.path.expanduser(f"~/.msb/memory/{profile.name}")
+    os.makedirs(host_path, exist_ok=True)
+    return {MEMORY_SANDBOX_PATH: Volume.bind(host_path)}
+
+
 def build_context_repo_volume(raw_path: str) -> tuple[str, dict[str, object]]:
     host_path = os.path.abspath(os.path.expanduser(raw_path))
     if not os.path.isdir(host_path):
         sys.exit(f"context repo path does not exist or is not a directory: {raw_path}")
     if not os.path.exists(os.path.join(host_path, ".git")):
-        sys.exit(f"context repo path is not a git repository (no .git found): {raw_path}")
+        sys.exit(
+            f"context repo path is not a git repository (no .git found): {raw_path}"
+        )
     sandbox_path = f"/home/msb/context/{os.path.basename(host_path)}"
     return sandbox_path, {sandbox_path: Volume.bind(host_path, readonly=True)}
 
@@ -315,7 +337,9 @@ def sandbox_name_for(path: str, profile_name: str, branch: str) -> str:
     # branch is part of the digest so concurrent `ai` runs in the same repo
     # (different worktrees/branches) don't collide on sandbox name and get
     # torn down by each other's replace=True.
-    digest = hashlib.sha256(f"{os.path.abspath(path)}:{branch}".encode()).hexdigest()[:10]
+    digest = hashlib.sha256(f"{os.path.abspath(path)}:{branch}".encode()).hexdigest()[
+        :10
+    ]
     return f"{profile_name}-{digest}"
 
 
@@ -357,6 +381,11 @@ async def main() -> None:
         "--context",
         help="path to a second, separate host git repo to mount read-only for reference",
     )
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="disable the persistent cross-project agent memory mount",
+    )
     args = parser.parse_args()
     profile = PROFILES[args.profile]
     target_branch = args.ref or os.environ.get("MSB_REFERENCE", None) or "master"
@@ -393,6 +422,9 @@ async def main() -> None:
     local_claude_md_patches = build_local_claude_md_patch(workdir, target_workdir)
     stack_volumes, stack_domains = build_stack_volumes(stack_names)
 
+    if not args.no_memory:
+        stack_volumes.update(build_memory_volume(profile))
+
     context_sandbox_path = None
     if args.context:
         context_sandbox_path, context_volume = build_context_repo_volume(args.context)
@@ -410,7 +442,10 @@ async def main() -> None:
     base_sha = result.stdout.strip()
 
     if context_sandbox_path:
-        print(f"> mounting context repo at {context_sandbox_path} (read-only)", file=sys.stderr)
+        print(
+            f"> mounting context repo at {context_sandbox_path} (read-only)",
+            file=sys.stderr,
+        )
 
     if local_claude_md_patches:
         print("> mirroring untracked local CLAUDE.md into sandbox", file=sys.stderr)
@@ -478,9 +513,13 @@ async def main() -> None:
             if result.exit_code != 0:
                 sys.exit(f"failed to set git user.email: {result.stderr_text}")
 
+        binary_args = profile.binary_args
+        if not args.no_memory:
+            binary_args = [*binary_args, profile.memory_flag, MEMORY_INSTRUCTIONS]
+
         print("> dropping into CLI...", file=sys.stderr)
         exit_code = await sandbox.attach(
-            profile.binary, profile.binary_args, cwd=target_workdir
+            profile.binary, binary_args, cwd=target_workdir
         )
 
         print("> dropping into sandbox shell...", file=sys.stderr)
