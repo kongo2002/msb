@@ -17,5 +17,6 @@
     "claude-sonnet-5": {
       "effortLevel": "medium"
     }
-  }
+  },
+  "autoMemoryEnabled": false
 }
