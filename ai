@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import hashlib
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -66,8 +67,12 @@ class Profile:
     extra_domains: tuple[str, ...]
     binary: str
     binary_args: list[str]
-    memory_flag: str  # CLI flag that takes a single dynamic instruction string
+    memory_flag: str | None = (
+        None  # CLI flag that takes a single dynamic instruction string
+    )
     config_paths: tuple[str, ...] = ()  # relative to $HOME, mirrored host -> sandbox
+    memory_config_path: str | None = None  # relative to $HOME; if set, memory
+    # instructions are appended in-sandbox to this file instead of passed via memory_flag
 
 
 PROFILES: dict[str, Profile] = {
@@ -97,8 +102,11 @@ PROFILES: dict[str, Profile] = {
         ),
         binary="copilot",
         binary_args=["--allow-all", "--disable-mcp-server", "github-mcp-server"],
-        memory_flag="-i",  # no system-prompt append flag; runs as the first turn instead
         config_paths=(".copilot/instructions",),
+        # no system-prompt append flag; append to a dedicated instructions file
+        # instead (copilot only picks up files matching
+        # `.copilot/instructions/**/*.instructions.md`)
+        memory_config_path=".copilot/instructions/msb",
     ),
     "claude": Profile(
         name="claude",
@@ -225,6 +233,25 @@ MEMORY_INSTRUCTIONS = (
     "anything specific to this project or this task. Ask the user for confirmation before "
     "modifying the file."
 )
+
+
+async def append_memory_instructions(sandbox: Sandbox, rel_path: str) -> None:
+    """Appends MEMORY_INSTRUCTIONS to a dedicated file in a profile's
+    instructions directory in-sandbox (idempotent - a resumed/keep-alive
+    sandbox must not duplicate the text)."""
+    dst = f"/home/msb/{rel_path}"
+    quoted_dst = shlex.quote(dst)
+    target = f"{dst}/memory.instructions.md"
+    quoted_target = shlex.quote(target)
+    quoted_text = shlex.quote(MEMORY_INSTRUCTIONS)
+    cmd = (
+        f"mkdir -p {quoted_dst} && touch {quoted_target} && "
+        f"grep -qF {quoted_text} {quoted_target} || "
+        f"printf '\\n%s\\n' {quoted_text} >> {quoted_target}"
+    )
+    result = await sandbox.exec("sh", ["-c", cmd])
+    if result.exit_code != 0:
+        sys.exit(f"failed to append memory instructions to {dst}: {result.stderr_text}")
 
 
 def build_memory_volume(profile: "Profile") -> dict[str, object]:
@@ -564,7 +591,10 @@ async def main() -> None:
 
         binary_args = profile.binary_args
         if not args.no_memory:
-            binary_args = [*binary_args, profile.memory_flag, MEMORY_INSTRUCTIONS]
+            if profile.memory_config_path:
+                await append_memory_instructions(sandbox, profile.memory_config_path)
+            else:
+                binary_args = [*binary_args, profile.memory_flag, MEMORY_INSTRUCTIONS]
 
         log("> dropping into CLI...")
         exit_code = await sandbox.attach(
