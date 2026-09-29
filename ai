@@ -569,7 +569,16 @@ async def main() -> None:
             if result.exit_code != 0:
                 sys.exit(f"failed to pin base sha in sandbox: {result.stderr_text}")
 
-            log("> applying host git identity")
+            log("> applying host git configuration")
+
+            # clear potential signing configuration (would fail due to missing keys anyways)
+            await sandbox.exec(
+                "git", ["config", "--unset", "gpg.format"], cwd=target_workdir
+            )
+            await sandbox.exec(
+                "git", ["config", "--unset", "commit.gpgsign"], cwd=target_workdir
+            )
+
             name, email = host_git_identity()
             if name:
                 result = await sandbox.exec(
