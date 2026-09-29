@@ -9,11 +9,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/dotnet:/opt/dotnet/tools:/usr/local/bin:/usr/local/share/pnpm/bin:$PATH" \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
-    PNPM_HOME=/usr/local/share/pnpm
+    PNPM_HOME=/usr/local/share/pnpm \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 
 # general dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git unzip xz-utils zip ca-certificates nodejs ripgrep less zsh vim \
+    curl git unzip xz-utils zip ca-certificates ripgrep less zsh vim iptables uidmap
+
+# nodejs
+RUN curl -sL https://deb.nodesource.com/setup_25.x -o nodesource_setup.sh \
+    && bash nodesource_setup.sh \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm nodesource_setup.sh \
     && rm -rf /var/lib/apt/lists/*
 
 # pnpm
@@ -36,8 +43,15 @@ RUN pnpm add -g @github/copilot
 # dotnet
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir /opt/dotnet
 
+# docker
+RUN curl -fsSL https://get.docker.com -o get-docker.sh && sh ./get-docker.sh && rm get-docker.sh
+
+# playwright
+RUN pnpm add -g @playwright/cli@latest \
+    && playwright-cli install-browser chromium --with-deps
+
 # user setup
-RUN useradd -m -u 1001 -s /bin/zsh msb
+RUN useradd -m -u 1001 -s /bin/zsh -G docker msb
 USER msb
 ENV HOME=/home/msb
 WORKDIR /home/msb
