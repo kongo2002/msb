@@ -562,7 +562,12 @@ async def main() -> None:
             name, email = host_git_identity()
             git_script_lines = [
                 "set -e",
-                f"git reset --hard {shlex.quote(target_branch)}",
+                f"git reset --hard {shlex.quote(base_sha)}",
+                # repoint the current branch to target_branch (HEAD already
+                # matches base_sha, so this doesn't touch the working tree)
+                # so it matches the reference branch instead of whatever
+                # branch happened to be checked out on the host
+                f"git checkout -B {shlex.quote(target_branch)}",
                 f"echo {shlex.quote(base_sha)} > {shlex.quote(BASE_SHA_FILE)}",
                 # clear potential signing configuration (would fail due to missing keys anyways)
                 "git config --unset gpg.format || true",
