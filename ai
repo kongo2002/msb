@@ -391,13 +391,6 @@ def sandbox_name_for(path: str, profile_name: str, branch: str) -> str:
     return f"{profile_name}-{digest}"
 
 
-async def chown_to_msb(sandbox: Sandbox, path: str, *, recursive: bool = True) -> None:
-    args = (["-R"] if recursive else []) + ["1001:1001", path]
-    result = await sandbox.exec("chown", args, user="root")
-    if result.exit_code != 0:
-        sys.exit(f"failed to change ownership of {path}: {result.stderr_text}")
-
-
 def build_network(
     profile_extra_domains: tuple[str, ...], user_extra_domains: tuple[str, ...] = ()
 ) -> Network:
@@ -544,56 +537,50 @@ async def main() -> None:
                 sys.exit(f"failed to resolve {target_branch}: {result.stderr}")
             base_sha = result.stdout.strip()
 
-            log("> adjust HOME ownership")
-            await chown_to_msb(sandbox, "/home/msb", recursive=False)
-
-            log("> adjust working directory ownership")
-            await chown_to_msb(sandbox, target_workdir)
-
-            await chown_to_msb(sandbox, "/home/msb/.claude")
-            await chown_to_msb(sandbox, "/home/msb/.copilot")
-
-            for dst in config_dsts:
-                await chown_to_msb(sandbox, dst)
-
-            log(f"> checking out latest {target_branch}")
-            result = await sandbox.exec(
-                "git", ["reset", "--hard", target_branch], cwd=target_workdir
+            log("> adjust ownership")
+            recursive_chown_paths = [
+                target_workdir,
+                "/home/msb/.claude",
+                "/home/msb/.copilot",
+                *config_dsts,
+            ]
+            chown_script = "\n".join(
+                [
+                    "set -e",
+                    "chown 1001:1001 /home/msb",
+                    *(
+                        f"chown -R 1001:1001 {shlex.quote(p)}"
+                        for p in recursive_chown_paths
+                    ),
+                ]
             )
+            result = await sandbox.exec("sh", ["-c", chown_script], user="root")
             if result.exit_code != 0:
-                sys.exit(f"failed to reset working directory: {result.stderr_text}")
+                sys.exit(f"failed to adjust ownership: {result.stderr_text}")
 
-            result = await sandbox.exec(
-                "sh", ["-c", f"echo {base_sha} > {BASE_SHA_FILE}"]
-            )
-            if result.exit_code != 0:
-                sys.exit(f"failed to pin base sha in sandbox: {result.stderr_text}")
-
-            log("> applying host git configuration")
-
-            # clear potential signing configuration (would fail due to missing keys anyways)
-            await sandbox.exec(
-                "git", ["config", "--unset", "gpg.format"], cwd=target_workdir
-            )
-            await sandbox.exec(
-                "git", ["config", "--unset", "commit.gpgsign"], cwd=target_workdir
-            )
-
+            log(f"> checking out latest {target_branch} and applying git configuration")
             name, email = host_git_identity()
+            git_script_lines = [
+                "set -e",
+                f"git reset --hard {shlex.quote(target_branch)}",
+                f"echo {shlex.quote(base_sha)} > {shlex.quote(BASE_SHA_FILE)}",
+                # clear potential signing configuration (would fail due to missing keys anyways)
+                "git config --unset gpg.format || true",
+                "git config --unset commit.gpgsign || true",
+            ]
             if name:
-                result = await sandbox.exec(
-                    "git", ["config", "--global", "user.name", name], cwd=target_workdir
+                git_script_lines.append(
+                    f"git config --global user.name {shlex.quote(name)}"
                 )
-                if result.exit_code != 0:
-                    sys.exit(f"failed to set git user.name: {result.stderr_text}")
             if email:
-                result = await sandbox.exec(
-                    "git",
-                    ["config", "--global", "user.email", email],
-                    cwd=target_workdir,
+                git_script_lines.append(
+                    f"git config --global user.email {shlex.quote(email)}"
                 )
-                if result.exit_code != 0:
-                    sys.exit(f"failed to set git user.email: {result.stderr_text}")
+            result = await sandbox.exec(
+                "sh", ["-c", "\n".join(git_script_lines)], cwd=target_workdir
+            )
+            if result.exit_code != 0:
+                sys.exit(f"failed to prepare sandbox repository: {result.stderr_text}")
 
         log(f"> creating worktree for branch {args.branch}")
         worktree_path = create_worktree(workdir, base_sha, args.branch, profile)
