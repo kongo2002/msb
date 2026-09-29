@@ -282,9 +282,9 @@ def host_git_identity() -> tuple[str | None, str | None]:
     return get("user.name"), get("user.email")
 
 
-def create_worktree(workdir: str, base_sha: str, branch: str) -> str:
+def create_worktree(workdir: str, base_sha: str, branch: str, profile: Profile) -> str:
     repo_name = os.path.basename(os.path.normpath(workdir))
-    worktree_path = f"/tmp/claude/{repo_name}-{branch}"
+    worktree_path = f"/tmp/{profile.name}/{repo_name}-{branch}"
     if os.path.isdir(worktree_path):
         # left behind by a prior keep-alive round for this branch - reuse it
         # so already-transplanted commits aren't lost.
@@ -587,7 +587,7 @@ async def main() -> None:
                     sys.exit(f"failed to set git user.email: {result.stderr_text}")
 
         log(f"> creating worktree for branch {args.branch}")
-        worktree_path = create_worktree(workdir, base_sha, args.branch)
+        worktree_path = create_worktree(workdir, base_sha, args.branch, profile)
 
         binary_args = profile.binary_args
         if not args.no_memory:
