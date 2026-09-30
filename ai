@@ -374,13 +374,16 @@ def host_git_identity() -> tuple[str | None, str | None]:
     return get("user.name"), get("user.email")
 
 
-def create_worktree(workdir: str, base_sha: str, branch: str, profile: Profile) -> str:
+def create_worktree(
+    workdir: str, base_sha: str, branch: str, profile: Profile
+) -> tuple[str, bool]:
+    """Returns (worktree_path, created). A worktree left behind by a prior
+    keep-alive round is reused (created=False) so already-transplanted commits
+    aren't lost."""
     repo_name = os.path.basename(os.path.normpath(workdir))
     worktree_path = f"/tmp/{profile.name}/{repo_name}-{branch}"
     if os.path.isdir(worktree_path):
-        # left behind by a prior keep-alive round for this branch - reuse it
-        # so already-transplanted commits aren't lost.
-        return worktree_path
+        return worktree_path, False
     result = subprocess.run(
         ["git", "worktree", "add", "-b", branch, worktree_path, base_sha],
         cwd=workdir,
@@ -390,7 +393,7 @@ def create_worktree(workdir: str, base_sha: str, branch: str, profile: Profile) 
     )
     if result.returncode != 0:
         sys.exit(f"failed to create worktree: {result.stderr}")
-    return worktree_path
+    return worktree_path, True
 
 
 async def collect_sandbox_patches(
@@ -792,7 +795,7 @@ async def main() -> None:
         )
 
         log(f"> creating worktree for branch {settings.branch}")
-        worktree_path = create_worktree(
+        worktree_path, worktree_created = create_worktree(
             workdir, base_sha, settings.branch, settings.profile
         )
 
@@ -818,11 +821,16 @@ async def main() -> None:
             f"> transferred sandbox commits onto {worktree_path} (branch {settings.branch})",
             file=sys.stderr,
         )
-    else:
+    elif worktree_created:
         print(
             "> no changes detected in sandbox, removing empty worktree", file=sys.stderr
         )
         remove_empty_worktree(workdir, worktree_path, settings.branch)
+    else:
+        print(
+            f"> no new changes in sandbox, keeping existing worktree {worktree_path}",
+            file=sys.stderr,
+        )
 
     if keep_alive:
         print(
