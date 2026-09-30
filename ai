@@ -75,7 +75,7 @@ class Profile:
     secret_allow_domains: tuple[str, ...]
     extra_domains: tuple[str, ...]
     binary: str
-    binary_args: list[str]
+    binary_args: tuple[str, ...]
     memory_flag: str | None = (
         None  # CLI flag that takes a single dynamic instruction string
     )
@@ -116,7 +116,7 @@ PROFILES: dict[str, Profile] = {
             "vscode.dev",
         ),
         binary="copilot",
-        binary_args=["--allow-all", "--disable-mcp-server", "github-mcp-server"],
+        binary_args=("--allow-all", "--disable-mcp-server", "github-mcp-server"),
         config_paths=(".copilot/instructions",),
         # no system-prompt append flag; append to a dedicated instructions file
         # instead (copilot only picks up files matching
@@ -133,7 +133,7 @@ PROFILES: dict[str, Profile] = {
             "platform.claude.com",
         ),
         binary="claude",
-        binary_args=["--dangerously-skip-permissions"],
+        binary_args=("--dangerously-skip-permissions",),
         memory_flag="--append-system-prompt",
         config_paths=(".claude/CLAUDE.md", ".claude/skills", ".claude/agents"),
     ),
@@ -739,7 +739,7 @@ async def prepare_sandbox(
 async def run_session(sandbox: Sandbox, settings: Settings, target_workdir: str) -> int:
     """Runs the AI CLI, then an interactive shell. Returns the CLI's exit code."""
     profile = settings.profile
-    binary_args = profile.binary_args
+    binary_args = list(profile.binary_args)
     if settings.use_memory:
         if profile.memory_config_path:
             await append_memory_instructions(sandbox, profile.memory_config_path)
