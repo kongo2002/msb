@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from microsandbox import (
     Action,
@@ -499,7 +499,7 @@ class Settings:
     context_path: str | None
     use_memory: bool
     verbose: bool
-    token: str
+    token: str = field(repr=False)
     image: str
     cpus: int
     memory_mib: int
