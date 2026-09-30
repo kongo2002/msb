@@ -83,6 +83,12 @@ class Profile:
     memory_config_path: str | None = None  # relative to $HOME; if set, memory
     # instructions are appended in-sandbox to this file instead of passed via memory_flag
 
+    def __post_init__(self) -> None:
+        if not self.memory_flag and not self.memory_config_path:
+            raise ValueError(
+                f"profile {self.name!r} needs memory_flag or memory_config_path"
+            )
+
 
 PROFILES: dict[str, Profile] = {
     "copilot": Profile(
