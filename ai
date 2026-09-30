@@ -413,12 +413,11 @@ def create_worktree(
     return worktree_path, True
 
 
-async def collect_sandbox_patches(
+async def collect_sandbox_bundle(
     sandbox: Sandbox, cwd: str, base_sha: str, wip_commit_message: str
 ) -> bytes | None:
-    """Commits any leftover dirty state in the sandbox, then formats every
-    commit made since base_sha (individually) as a patch series for the host.
-    Returns None if nothing changed."""
+    """Commits any leftover dirty state in the sandbox, then bundles every
+    commit made since base_sha for the host. Returns None if nothing changed."""
     status = await sandbox.exec("git", ["status", "--porcelain"], cwd=cwd)
     if status.stdout_text.strip():
         result = await sandbox.exec("git", ["add", "-A"], cwd=cwd)
@@ -435,32 +434,54 @@ async def collect_sandbox_patches(
     if int(count_result.stdout_text.strip() or "0") == 0:
         return None
 
-    patch_result = await sandbox.exec(
-        "git",
-        ["format-patch", "--binary", "--stdout", f"{base_sha}..HEAD"],
-        cwd=cwd,
+    bundle_result = await sandbox.exec(
+        "git", ["bundle", "create", "-", f"{base_sha}..HEAD"], cwd=cwd
     )
-    check_result(patch_result, "format sandbox commits")
-    return patch_result.stdout_bytes
+    check_result(bundle_result, "bundle sandbox commits")
+    return bundle_result.stdout_bytes
 
 
-def apply_patches_to_worktree(worktree_path: str, patches: bytes) -> None:
-    result = subprocess.run(
-        ["git", "am"],
-        input=patches,
-        cwd=worktree_path,
-        capture_output=True,
-        check=False,
+def run_git(cwd: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
     )
-    if result.returncode != 0:
-        subprocess.run(["git", "am", "--abort"], cwd=worktree_path, check=False)
-        fd, patch_path = tempfile.mkstemp(suffix=".patch", prefix="ai-sandbox-")
-        with os.fdopen(fd, "wb") as f:
-            f.write(patches)
-        raise FatalError(
-            f"git am failed: {result.stderr.decode(errors='replace')}\n"
-            f"sandbox patches preserved at {patch_path} for manual recovery"
+
+
+def apply_bundle_to_worktree(worktree_path: str, bundle: bytes, base_sha: str) -> None:
+    """Brings the bundled commits onto the worktree branch: a fast-forward if
+    the branch still sits at base_sha (keeping the sandbox shas), otherwise a
+    cherry-pick on top of the branch tip. A conflicting cherry-pick is left in
+    progress for the user to resolve."""
+    fd, bundle_path = tempfile.mkstemp(suffix=".bundle", prefix="ai-sandbox-")
+    with os.fdopen(fd, "wb") as f:
+        f.write(bundle)
+
+    def fail(step: str, detail: str) -> FatalError:
+        return FatalError(
+            f"{step} failed: {detail.strip()}\n"
+            f"sandbox commits preserved at {bundle_path}\n"
+            f"  inspect:  git fetch {shlex.quote(bundle_path)} HEAD\n"
+            "            git log --oneline FETCH_HEAD\n"
+            f"  keep:     git fetch {shlex.quote(bundle_path)} HEAD:refs/heads/<name>\n"
+            "  pick:     git cherry-pick <sha>"
         )
+
+    result = run_git(worktree_path, "fetch", "--quiet", bundle_path, "HEAD")
+    if result.returncode != 0:
+        raise fail("fetching sandbox bundle", result.stderr)
+    tip = resolve_ref(worktree_path, "FETCH_HEAD")
+
+    if resolve_ref(worktree_path, "HEAD") == base_sha:
+        result = run_git(worktree_path, "merge", "--ff-only", tip)
+        step = "fast-forward"
+    else:
+        result = run_git(worktree_path, "cherry-pick", f"{base_sha}..{tip}")
+        step = (
+            "cherry-pick onto worktree tip (resolve, then `git cherry-pick --continue`)"
+        )
+    if result.returncode != 0:
+        raise fail(step, result.stderr or result.stdout)
+    os.unlink(bundle_path)
 
 
 def remove_empty_worktree(workdir: str, worktree_path: str, branch: str) -> None:
@@ -844,14 +865,14 @@ async def run(
 
         # determined before collecting so a collection failure still keeps the sandbox
         keep_alive = await consume_keep_alive_marker(sandbox)
-        patches = await collect_sandbox_patches(
+        bundle = await collect_sandbox_bundle(
             sandbox,
             target_workdir,
             base_sha,
             f"WIP: {settings.profile.name} sandbox session ({settings.branch})",
         )
         uncollected = False
-        if keep_alive and patches is not None:
+        if keep_alive and bundle is not None:
             await repin_base_sha(sandbox, target_workdir)
     finally:
         if uncollected:
@@ -863,8 +884,8 @@ async def run(
         elif not keep_alive:
             await sandbox.destroy()
 
-    if patches is not None:
-        apply_patches_to_worktree(worktree_path, patches)
+    if bundle is not None:
+        apply_bundle_to_worktree(worktree_path, bundle, base_sha)
         print(
             f"> transferred sandbox commits onto {worktree_path} (branch {settings.branch})",
             file=sys.stderr,
