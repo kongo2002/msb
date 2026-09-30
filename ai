@@ -63,6 +63,17 @@ def check_result(result, action: str) -> None:
         raise FatalError(f"failed to {action}: {result.stderr_text}")
 
 
+def run_host(
+    cmd: list[str], cwd: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+
+
+def check_process(result: subprocess.CompletedProcess[str], action: str) -> None:
+    if result.returncode != 0:
+        raise FatalError(f"failed to {action}: {result.stderr}")
+
+
 # Domains needed regardless of which AI CLI profile or stack is active.
 BASE_DOMAINS = [
     # GitHub - repo access, OAuth device login, tarballs/CDN (e.g. uv-managed tool downloads).
@@ -253,13 +264,7 @@ def build_local_claude_md_patch(workdir: str, target_workdir: str) -> list:
     host_path = os.path.join(workdir, "CLAUDE.md")
     if not os.path.isfile(host_path):
         return []
-    result = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", "CLAUDE.md"],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_host(["git", "ls-files", "--error-unmatch", "CLAUDE.md"], workdir)
     if result.returncode == 0:
         return []  # tracked - git reset --hard already brings it in
     return [Patch.copy_file(src=host_path, dst=f"{target_workdir}/CLAUDE.md")]
@@ -296,12 +301,7 @@ def build_docker_image_volumes(images: list[str]) -> dict[str, object]:
     one directory per image, so only the requested images get loaded."""
     volumes: dict[str, object] = {}
     for image in images:
-        result = subprocess.run(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = run_host(["docker", "image", "inspect", "--format", "{{.Id}}", image])
         if result.returncode != 0:
             raise FatalError(f"docker image not found on host (pull it first): {image}")
         image_id = result.stdout.strip().removeprefix("sha256:")[:12]
@@ -314,16 +314,10 @@ def build_docker_image_volumes(images: list[str]) -> dict[str, object]:
             os.makedirs(host_dir)
             log(f"> exporting docker image {image}")
             tmp = f"{tarball}.tmp"
-            saved = subprocess.run(
-                ["docker", "save", "-o", tmp, image],
-                capture_output=True,
-                text=True,
-                check=False,
+            check_process(
+                run_host(["docker", "save", "-o", tmp, image]),
+                f"export docker image {image}",
             )
-            if saved.returncode != 0:
-                raise FatalError(
-                    f"failed to export docker image {image}: {saved.stderr}"
-                )
             os.rename(tmp, tarball)
         volumes[f"{DOCKER_IMAGES_SANDBOX_PATH}/{key}"] = Volume.bind(
             host_dir, readonly=True
@@ -383,9 +377,7 @@ def build_context_repo_volume(raw_path: str) -> tuple[str, dict[str, object]]:
 
 def host_git_identity() -> tuple[str | None, str | None]:
     def get(key: str) -> str | None:
-        result = subprocess.run(
-            ["git", "config", key], capture_output=True, text=True, check=False
-        )
+        result = run_host(["git", "config", key])
         return result.stdout.strip() or None
 
     return get("user.name"), get("user.email")
@@ -401,15 +393,10 @@ def create_worktree(
     worktree_path = f"/tmp/{profile.name}/{repo_name}-{branch}"
     if os.path.isdir(worktree_path):
         return worktree_path, False
-    result = subprocess.run(
-        ["git", "worktree", "add", "-b", branch, worktree_path, base_sha],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_host(
+        ["git", "worktree", "add", "-b", branch, worktree_path, base_sha], workdir
     )
-    if result.returncode != 0:
-        raise FatalError(f"failed to create worktree: {result.stderr}")
+    check_process(result, "create worktree")
     return worktree_path, True
 
 
@@ -441,12 +428,6 @@ async def collect_sandbox_bundle(
     return bundle_result.stdout_bytes
 
 
-def run_git(cwd: str, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
-    )
-
-
 def apply_bundle_to_worktree(worktree_path: str, bundle: bytes, base_sha: str) -> None:
     """Brings the bundled commits onto the worktree branch: a fast-forward if
     the branch still sits at base_sha (keeping the sandbox shas), otherwise a
@@ -466,16 +447,16 @@ def apply_bundle_to_worktree(worktree_path: str, bundle: bytes, base_sha: str) -
             "  pick:     git cherry-pick <sha>"
         )
 
-    result = run_git(worktree_path, "fetch", "--quiet", bundle_path, "HEAD")
+    result = run_host(["git", "fetch", "--quiet", bundle_path, "HEAD"], worktree_path)
     if result.returncode != 0:
         raise fail("fetching sandbox bundle", result.stderr)
     tip = resolve_ref(worktree_path, "FETCH_HEAD")
 
     if resolve_ref(worktree_path, "HEAD") == base_sha:
-        result = run_git(worktree_path, "merge", "--ff-only", tip)
+        result = run_host(["git", "merge", "--ff-only", tip], worktree_path)
         step = "fast-forward"
     else:
-        result = run_git(worktree_path, "cherry-pick", f"{base_sha}..{tip}")
+        result = run_host(["git", "cherry-pick", f"{base_sha}..{tip}"], worktree_path)
         step = (
             "cherry-pick onto worktree tip (resolve, then `git cherry-pick --continue`)"
         )
@@ -485,26 +466,14 @@ def apply_bundle_to_worktree(worktree_path: str, bundle: bytes, base_sha: str) -
 
 
 def remove_empty_worktree(workdir: str, worktree_path: str, branch: str) -> None:
-    result = subprocess.run(
-        ["git", "worktree", "remove", "--force", worktree_path],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_host(["git", "worktree", "remove", "--force", worktree_path], workdir)
     if result.returncode != 0:
         print(
             f"warning: failed to remove empty worktree {worktree_path}: {result.stderr}",
             file=sys.stderr,
         )
         return
-    result = subprocess.run(
-        ["git", "branch", "-D", branch],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_host(["git", "branch", "-D", branch], workdir)
     if result.returncode != 0:
         print(
             f"warning: failed to delete empty branch {branch}: {result.stderr}",
@@ -629,15 +598,8 @@ def parse_settings() -> Settings:
 
 
 def resolve_ref(workdir: str, ref: str) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", ref],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise FatalError(f"failed to resolve {ref}: {result.stderr}")
+    result = run_host(["git", "rev-parse", ref], workdir)
+    check_process(result, f"resolve {ref}")
     return result.stdout.strip()
 
 
