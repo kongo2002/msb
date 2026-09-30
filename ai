@@ -746,6 +746,13 @@ async def prepare_fresh_sandbox(
         # clear potential signing configuration (would fail due to missing keys anyways)
         "git config --unset gpg.format || true",
         "git config --unset commit.gpgsign || true",
+        # couple of git convenience aliases
+        "git config --global alias.br branch",
+        "git config --global alias.ci 'commit -v'",
+        "git config --global alias.cia 'commit -v --amend'",
+        "git config --global alias.co checkout",
+        "git config --global alias.df diff",
+        "git config --global alias.st 'status --short --branch'",
     ]
     if name:
         git_script_lines.append(f"git config --global user.name {shlex.quote(name)}")
@@ -781,7 +788,9 @@ async def run_session(sandbox: Sandbox, settings: Settings, target_workdir: str)
             binary_args = [*binary_args, profile.memory_flag, MEMORY_INSTRUCTIONS]
 
     log("> dropping into CLI...")
-    exit_code = await sandbox.attach(profile.binary, binary_args, cwd=target_workdir)
+    exit_code = await sandbox.attach(
+        profile.binary, binary_args, cwd=target_workdir, env={"COLORTERM": "truecolor"}
+    )
 
     print(
         "> dropping into sandbox shell... (run `keep-alive` instead of `exit` "

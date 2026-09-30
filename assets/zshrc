@@ -55,6 +55,7 @@ PROMPT='%F{cyan}%n@%m%f %F{blue}%~%f%F{yellow}${vcs_info_msg_0_}%f %# '
 export EDITOR=vim
 export PAGER=less
 export LESS='-R'
+export COLORTERM=truecolor
 
 # aliases
 alias ls='ls --color=auto'
