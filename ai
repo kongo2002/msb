@@ -395,7 +395,7 @@ def create_worktree(workdir: str, base_sha: str, branch: str, profile: Profile) 
 
 async def collect_sandbox_patches(
     sandbox: Sandbox, cwd: str, base_sha: str, wip_commit_message: str
-) -> str | None:
+) -> bytes | None:
     """Commits any leftover dirty state in the sandbox, then formats every
     commit made since base_sha (individually) as a patch series for the host.
     Returns None if nothing changed."""
@@ -421,25 +421,24 @@ async def collect_sandbox_patches(
         cwd=cwd,
     )
     check_result(patch_result, "format sandbox commits")
-    return patch_result.stdout_text
+    return patch_result.stdout_bytes
 
 
-def apply_patches_to_worktree(worktree_path: str, patch_text: str) -> None:
+def apply_patches_to_worktree(worktree_path: str, patches: bytes) -> None:
     result = subprocess.run(
         ["git", "am"],
-        input=patch_text,
+        input=patches,
         cwd=worktree_path,
         capture_output=True,
-        text=True,
         check=False,
     )
     if result.returncode != 0:
         subprocess.run(["git", "am", "--abort"], cwd=worktree_path, check=False)
         fd, patch_path = tempfile.mkstemp(suffix=".patch", prefix="ai-sandbox-")
-        with os.fdopen(fd, "w") as f:
-            f.write(patch_text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(patches)
         sys.exit(
-            f"git am failed: {result.stderr}\n"
+            f"git am failed: {result.stderr.decode(errors='replace')}\n"
             f"sandbox patches preserved at {patch_path} for manual recovery"
         )
 
@@ -801,20 +800,20 @@ async def main() -> None:
 
         # determined before collecting so a collection failure still keeps the sandbox
         keep_alive = await consume_keep_alive_marker(sandbox)
-        patch_text = await collect_sandbox_patches(
+        patches = await collect_sandbox_patches(
             sandbox,
             target_workdir,
             base_sha,
             f"WIP: {settings.profile.name} sandbox session ({settings.branch})",
         )
-        if keep_alive and patch_text is not None:
+        if keep_alive and patches is not None:
             await repin_base_sha(sandbox, target_workdir)
     finally:
         if not keep_alive:
             await sandbox.destroy()
 
-    if patch_text is not None:
-        apply_patches_to_worktree(worktree_path, patch_text)
+    if patches is not None:
+        apply_patches_to_worktree(worktree_path, patches)
         print(
             f"> transferred sandbox commits onto {worktree_path} (branch {settings.branch})",
             file=sys.stderr,
