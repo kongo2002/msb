@@ -190,8 +190,10 @@ STACKS: dict[str, Stack] = {
             "production.cloudflare.docker.com",
             "production.cloudfront.docker.com",
         ),
+        # runs on resume as well: a stopped sandbox has no daemon anymore.
         # fully detached, otherwise exec blocks on (or reaps) the daemon
         root_script=f"""
+docker info >/dev/null 2>&1 && exit 0
 setsid nohup dockerd >/var/log/dockerd.log 2>&1 &
 setsid nohup sh -c '
     until docker info >/dev/null 2>&1; do sleep 1; done
@@ -650,15 +652,6 @@ async def main() -> None:
             if result.exit_code != 0:
                 sys.exit(f"failed to adjust ownership: {result.stderr_text}")
 
-            for stack_name in sorted(stack_names):
-                root_script = STACKS[stack_name].root_script
-                if not root_script:
-                    continue
-                log(f"> setting up {stack_name}")
-                result = await sandbox.exec("sh", ["-c", root_script], user="root")
-                if result.exit_code != 0:
-                    sys.exit(f"failed to set up {stack_name}: {result.stderr_text}")
-
             log(f"> checking out latest {target_branch} and applying git configuration")
             name, email = host_git_identity()
             git_script_lines = [
@@ -687,6 +680,15 @@ async def main() -> None:
             )
             if result.exit_code != 0:
                 sys.exit(f"failed to prepare sandbox repository: {result.stderr_text}")
+
+        for stack_name in sorted(stack_names):
+            root_script = STACKS[stack_name].root_script
+            if not root_script:
+                continue
+            log(f"> setting up {stack_name}")
+            result = await sandbox.exec("sh", ["-c", root_script], user="root")
+            if result.exit_code != 0:
+                sys.exit(f"failed to set up {stack_name}: {result.stderr_text}")
 
         log(f"> creating worktree for branch {args.branch}")
         worktree_path = create_worktree(workdir, base_sha, args.branch, profile)
