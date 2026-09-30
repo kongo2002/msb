@@ -49,6 +49,10 @@ BASE_SHA_FILE = "/home/msb/.ai-sandbox-base-sha"
 _verbose = False
 
 
+class FatalError(Exception):
+    """Unrecoverable failure; reported once by main()."""
+
+
 def log(msg: str) -> None:
     if _verbose:
         print(msg, file=sys.stderr)
@@ -56,7 +60,7 @@ def log(msg: str) -> None:
 
 def check_result(result, action: str) -> None:
     if result.exit_code != 0:
-        sys.exit(f"failed to {action}: {result.stderr_text}")
+        raise FatalError(f"failed to {action}: {result.stderr_text}")
 
 
 # Domains needed regardless of which AI CLI profile or stack is active.
@@ -258,7 +262,7 @@ def env_positive_int(name: str, default: int) -> int:
     if raw is None or not raw.strip():
         return default
     if not raw.strip().isdigit() or int(raw) < 1:
-        sys.exit(f"{name} must be a positive integer, got: {raw!r}")
+        raise FatalError(f"{name} must be a positive integer, got: {raw!r}")
     return int(raw)
 
 
@@ -291,7 +295,7 @@ def build_docker_image_volumes(images: list[str]) -> dict[str, object]:
             check=False,
         )
         if result.returncode != 0:
-            sys.exit(f"docker image not found on host (pull it first): {image}")
+            raise FatalError(f"docker image not found on host (pull it first): {image}")
         image_id = result.stdout.strip().removeprefix("sha256:")[:12]
         key = re.sub(r"[^A-Za-z0-9_.-]", "_", image)
         host_dir = os.path.expanduser(f"~/.msb/docker-images/{key}")
@@ -309,7 +313,9 @@ def build_docker_image_volumes(images: list[str]) -> dict[str, object]:
                 check=False,
             )
             if saved.returncode != 0:
-                sys.exit(f"failed to export docker image {image}: {saved.stderr}")
+                raise FatalError(
+                    f"failed to export docker image {image}: {saved.stderr}"
+                )
             os.rename(tmp, tarball)
         volumes[f"{DOCKER_IMAGES_SANDBOX_PATH}/{key}"] = Volume.bind(
             host_dir, readonly=True
@@ -356,9 +362,11 @@ def build_memory_volume(profile: "Profile") -> dict[str, object]:
 def build_context_repo_volume(raw_path: str) -> tuple[str, dict[str, object]]:
     host_path = os.path.abspath(os.path.expanduser(raw_path))
     if not os.path.isdir(host_path):
-        sys.exit(f"context repo path does not exist or is not a directory: {raw_path}")
+        raise FatalError(
+            f"context repo path does not exist or is not a directory: {raw_path}"
+        )
     if not os.path.exists(os.path.join(host_path, ".git")):
-        sys.exit(
+        raise FatalError(
             f"context repo path is not a git repository (no .git found): {raw_path}"
         )
     sandbox_path = f"/home/msb/context/{os.path.basename(host_path)}"
@@ -393,7 +401,7 @@ def create_worktree(
         check=False,
     )
     if result.returncode != 0:
-        sys.exit(f"failed to create worktree: {result.stderr}")
+        raise FatalError(f"failed to create worktree: {result.stderr}")
     return worktree_path, True
 
 
@@ -441,7 +449,7 @@ def apply_patches_to_worktree(worktree_path: str, patches: bytes) -> None:
         fd, patch_path = tempfile.mkstemp(suffix=".patch", prefix="ai-sandbox-")
         with os.fdopen(fd, "wb") as f:
             f.write(patches)
-        sys.exit(
+        raise FatalError(
             f"git am failed: {result.stderr.decode(errors='replace')}\n"
             f"sandbox patches preserved at {patch_path} for manual recovery"
         )
@@ -554,21 +562,25 @@ def parse_settings() -> Settings:
     )
     unknown_stacks = stack_names - STACKS.keys()
     if unknown_stacks:
-        sys.exit(
+        raise FatalError(
             f"unknown stack(s): {', '.join(sorted(unknown_stacks))}; "
             f"choices: {', '.join(sorted(STACKS))}"
         )
 
     token = os.environ.get(profile.token_env)
     if not token:
-        sys.exit(f"Set {profile.token_env} in your host shell before running this.")
+        raise FatalError(
+            f"Set {profile.token_env} in your host shell before running this."
+        )
 
     if not os.path.exists(".git"):
-        sys.exit("Current directory is not a git repository")
+        raise FatalError("Current directory is not a git repository")
 
     docker_images = tuple(split_csv(os.environ.get("MSB_DOCKER_IMAGES", "")))
     if docker_images and "docker" not in stack_names:
-        sys.exit("MSB_DOCKER_IMAGES requires the docker stack (--stacks docker)")
+        raise FatalError(
+            "MSB_DOCKER_IMAGES requires the docker stack (--stacks docker)"
+        )
 
     return Settings(
         branch=args.branch,
@@ -596,7 +608,7 @@ def resolve_ref(workdir: str, ref: str) -> str:
         check=False,
     )
     if result.returncode != 0:
-        sys.exit(f"failed to resolve {ref}: {result.stderr}")
+        raise FatalError(f"failed to resolve {ref}: {result.stderr}")
     return result.stdout.strip()
 
 
@@ -875,14 +887,18 @@ async def run(
 
 
 def main() -> None:
-    settings = parse_settings()
     global _verbose
-    _verbose = settings.verbose
+    try:
+        settings = parse_settings()
+        _verbose = settings.verbose
 
-    workdir = os.getcwd()
-    target_workdir = "/home/msb/workspace"
-    host = prepare_host_inputs(settings, workdir, target_workdir)
-    sys.exit(asyncio.run(run(settings, host, workdir, target_workdir)))
+        workdir = os.getcwd()
+        target_workdir = "/home/msb/workspace"
+        host = prepare_host_inputs(settings, workdir, target_workdir)
+        exit_code = asyncio.run(run(settings, host, workdir, target_workdir))
+    except FatalError as e:
+        sys.exit(str(e))
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
