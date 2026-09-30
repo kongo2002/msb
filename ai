@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from microsandbox import (
@@ -586,10 +587,33 @@ def parse_settings() -> Settings:
     )
 
 
-async def provision_sandbox(
-    settings: Settings, workdir: str, target_workdir: str, sandbox_name: str
-) -> tuple[Sandbox, bool, list[str]]:
-    """Creates or resumes the sandbox. Returns (sandbox, resuming, config_dsts)."""
+def resolve_ref(workdir: str, ref: str) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", ref],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.exit(f"failed to resolve {ref}: {result.stderr}")
+    return result.stdout.strip()
+
+
+@dataclass(frozen=True)
+class HostInputs:
+    """Everything the sandbox is built from, gathered on the host up front."""
+
+    target_sha: str
+    patches: tuple[object, ...]
+    volumes: Mapping[str, object]
+    domains: tuple[str, ...]
+    config_dsts: tuple[str, ...]
+
+
+def prepare_host_inputs(
+    settings: Settings, workdir: str, target_workdir: str
+) -> HostInputs:
     profile = settings.profile
     config_patches, config_dsts = build_config_patches(profile)
     local_claude_md_patches = build_local_claude_md_patch(workdir, target_workdir)
@@ -608,14 +632,32 @@ async def provision_sandbox(
         volumes.update(context_volume)
         log(f"> mounting context repo at {context_sandbox_path} (read-only)")
 
+    if local_claude_md_patches:
+        log("> mirroring untracked local CLAUDE.md into sandbox")
+
+    return HostInputs(
+        target_sha=resolve_ref(workdir, settings.target_branch),
+        patches=(
+            Patch.copy_dir(src=".git", dst=f"{target_workdir}/.git"),
+            *config_patches,
+            *local_claude_md_patches,
+        ),
+        volumes=volumes,
+        domains=(*settings.extra_domains, *stack_domains),
+        config_dsts=tuple(config_dsts),
+    )
+
+
+async def provision_sandbox(
+    settings: Settings, host: HostInputs, sandbox_name: str
+) -> tuple[Sandbox, bool]:
+    """Creates or resumes the sandbox. Returns (sandbox, resuming)."""
+    profile = settings.profile
     try:
         existing = await Sandbox.get(sandbox_name)
         resuming = existing.status in RESUMABLE_STATUSES
     except SandboxNotFoundError:
         resuming = False
-
-    if local_claude_md_patches:
-        log("> mirroring untracked local CLAUDE.md into sandbox")
 
     log("> resuming sandbox" if resuming else "> creating sandbox")
     sandbox = await Sandbox.connect_or_create(
@@ -623,9 +665,7 @@ async def provision_sandbox(
         image=settings.image,
         cpus=settings.cpus,
         memory=settings.memory_mib,
-        network=build_network(
-            profile.extra_domains, (*settings.extra_domains, *stack_domains)
-        ),
+        network=build_network(profile.extra_domains, host.domains),
         secrets=[
             Secret.env(
                 profile.secret_env,
@@ -633,14 +673,10 @@ async def provision_sandbox(
                 allow=list(profile.secret_allow_domains),
             ),
         ],
-        patches=[
-            Patch.copy_dir(src=".git", dst=f"{target_workdir}/.git"),
-            *config_patches,
-            *local_claude_md_patches,
-        ],
-        volumes=volumes,
+        patches=host.patches,
+        volumes=host.volumes,
     )
-    return sandbox, resuming, config_dsts
+    return sandbox, resuming
 
 
 def build_root_script(
@@ -662,10 +698,9 @@ def build_root_script(
 async def prepare_sandbox(
     sandbox: Sandbox,
     settings: Settings,
-    workdir: str,
+    host: HostInputs,
     target_workdir: str,
     resuming: bool,
-    config_dsts: list[str],
 ) -> str:
     """Brings the sandbox into a ready state. Returns the pinned base sha."""
     if resuming:
@@ -676,23 +711,12 @@ async def prepare_sandbox(
         base_sha = result.stdout_text.strip()
         chown_paths = None
     else:
-        host_result = subprocess.run(  # noqa: ASYNC221 - one-shot CLI script, no concurrent event loop work
-            ["git", "rev-parse", settings.target_branch],
-            cwd=workdir,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if host_result.returncode != 0:
-            sys.exit(
-                f"failed to resolve {settings.target_branch}: {host_result.stderr}"
-            )
-        base_sha = host_result.stdout.strip()
+        base_sha = host.target_sha
         chown_paths = [
             target_workdir,
             "/home/msb/.claude",
             "/home/msb/.copilot",
-            *config_dsts,
+            *host.config_dsts,
         ]
 
     root_script = build_root_script(chown_paths, settings.stack_names)
@@ -781,23 +805,17 @@ async def repin_base_sha(sandbox: Sandbox, target_workdir: str) -> None:
     check_result(pin_result, "re-pin base sha in sandbox")
 
 
-async def main() -> None:
-    settings = parse_settings()
-    global _verbose
-    _verbose = settings.verbose
-
-    workdir = os.getcwd()
-    target_workdir = "/home/msb/workspace"
+async def run(
+    settings: Settings, host: HostInputs, workdir: str, target_workdir: str
+) -> int:
     sandbox_name = sandbox_name_for(workdir, settings.profile.name, settings.branch)
-    sandbox, resuming, config_dsts = await provision_sandbox(
-        settings, workdir, target_workdir, sandbox_name
-    )
+    sandbox, resuming = await provision_sandbox(settings, host, sandbox_name)
 
     keep_alive = False
     uncollected = False
     try:
         base_sha = await prepare_sandbox(
-            sandbox, settings, workdir, target_workdir, resuming, config_dsts
+            sandbox, settings, host, target_workdir, resuming
         )
 
         log(f"> creating worktree for branch {settings.branch}")
@@ -853,10 +871,21 @@ async def main() -> None:
             file=sys.stderr,
         )
 
-    sys.exit(exit_code)
+    return exit_code
+
+
+def main() -> None:
+    settings = parse_settings()
+    global _verbose
+    _verbose = settings.verbose
+
+    workdir = os.getcwd()
+    target_workdir = "/home/msb/workspace"
+    host = prepare_host_inputs(settings, workdir, target_workdir)
+    sys.exit(asyncio.run(run(settings, host, workdir, target_workdir)))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
 
 # vim: ft=python:
