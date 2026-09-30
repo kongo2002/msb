@@ -485,7 +485,8 @@ def build_network(
     profile_extra_domains: tuple[str, ...], user_extra_domains: tuple[str, ...] = ()
 ) -> Network:
     rules = list(Rule.allow_dns())
-    for domain in (*BASE_DOMAINS, *profile_extra_domains, *user_extra_domains):
+    all_domains = (*BASE_DOMAINS, *profile_extra_domains, *user_extra_domains)
+    for domain in dict.fromkeys(all_domains):
         rules.append(Rule.allow(destination=Destination.domain(domain), port=443))
     return Network(policy=NetworkPolicy(default_egress=Action.DENY, rules=tuple(rules)))
 
