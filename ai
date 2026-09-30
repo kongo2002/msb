@@ -162,7 +162,7 @@ STACKS: dict[str, Stack] = {
             "api.nuget.org",
             "globalcdn.nuget.org",
             "pkgs.dev.azure.com",
-            # Azure Blob Storage — Azure Artifacts redirects .nupkg downloads here.
+            # Azure Blob Storage - Azure Artifacts redirects .nupkg downloads here.
             "blob.core.windows.net",
         ),
     ),
@@ -789,6 +789,7 @@ async def main() -> None:
     )
 
     keep_alive = False
+    uncollected = False
     try:
         base_sha = await prepare_sandbox(
             sandbox, settings, workdir, target_workdir, resuming, config_dsts
@@ -799,6 +800,8 @@ async def main() -> None:
             workdir, base_sha, settings.branch, settings.profile
         )
 
+        # from here on the sandbox may hold work that exists nowhere else
+        uncollected = True
         exit_code = await run_session(sandbox, settings, target_workdir)
 
         # determined before collecting so a collection failure still keeps the sandbox
@@ -809,10 +812,17 @@ async def main() -> None:
             base_sha,
             f"WIP: {settings.profile.name} sandbox session ({settings.branch})",
         )
+        uncollected = False
         if keep_alive and patches is not None:
             await repin_base_sha(sandbox, target_workdir)
     finally:
-        if not keep_alive:
+        if uncollected:
+            print(
+                f"> session output not collected, sandbox kept as '{sandbox_name}' - "
+                "rerun the same command to resume",
+                file=sys.stderr,
+            )
+        elif not keep_alive:
             await sandbox.destroy()
 
     if patches is not None:
