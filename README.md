@@ -22,7 +22,7 @@ docker save msb-base:latest | msb load
 ## Usage
 
 ```sh
-ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python,docker]
+ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python,docker,playwright]
 ```
 
 - `<branch>` - name of the branch/worktree created under `/tmp/claude/<repo-name>-<branch>` to

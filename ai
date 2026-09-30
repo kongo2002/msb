@@ -230,6 +230,20 @@ setsid nohup sh -c '
 ' >/var/log/docker-load.log 2>&1 &
 """,
     ),
+    "playwright": Stack(
+        "playwright",
+        (),
+        # chromium ignores the system trust store and only reads the user's NSS db
+        root_script="""
+[ -f /.msb/tls/ca.pem ] || exit 0
+su msb -s /bin/sh -c '
+    mkdir -p ~/.pki/nssdb
+    [ -f ~/.pki/nssdb/cert9.db ] || certutil -d sql:$HOME/.pki/nssdb -N --empty-password
+    certutil -d sql:$HOME/.pki/nssdb -D -n microsandbox-ca 2>/dev/null
+    certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n microsandbox-ca -i /.msb/tls/ca.pem
+'
+""",
+    ),
 }
 
 
