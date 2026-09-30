@@ -772,7 +772,11 @@ async def repin_base_sha(sandbox: Sandbox, target_workdir: str) -> None:
     head_result = await sandbox.exec("git", ["rev-parse", "HEAD"], cwd=target_workdir)
     check_result(head_result, "read sandbox HEAD")
     pin_result = await sandbox.exec(
-        "sh", ["-c", f"echo {head_result.stdout_text.strip()} > {BASE_SHA_FILE}"]
+        "sh",
+        [
+            "-c",
+            f"echo {shlex.quote(head_result.stdout_text.strip())} > {shlex.quote(BASE_SHA_FILE)}",
+        ],
     )
     check_result(pin_result, "re-pin base sha in sandbox")
 
