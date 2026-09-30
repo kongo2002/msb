@@ -222,9 +222,18 @@ setsid nohup sh -c '
 }
 
 
-def build_config_patches(profile: "Profile") -> tuple[list, list[str]]:
+def profile_state_dirs(profile: Profile) -> list[str]:
+    """Top-level dirs the profile's config is copied into; the copy leaves them
+    root-owned, but the CLI writes its state there."""
+    return list(
+        dict.fromkeys(
+            f"/home/msb/{path.split('/')[0]}" for path in profile.config_paths
+        )
+    )
+
+
+def build_config_patches(profile: Profile) -> list:
     patches = []
-    dsts = []
     for rel_path in profile.config_paths:
         host_path = os.path.expanduser(f"~/{rel_path}")
         if not os.path.exists(host_path):
@@ -234,8 +243,7 @@ def build_config_patches(profile: "Profile") -> tuple[list, list[str]]:
             patches.append(Patch.copy_dir(src=host_path, dst=dst))
         else:
             patches.append(Patch.copy_file(src=host_path, dst=dst))
-        dsts.append(dst)
-    return patches, dsts
+    return patches
 
 
 def build_local_claude_md_patch(workdir: str, target_workdir: str) -> list:
@@ -620,14 +628,13 @@ class HostInputs:
     patches: tuple[object, ...]
     volumes: Mapping[str, object]
     domains: tuple[str, ...]
-    config_dsts: tuple[str, ...]
 
 
 def prepare_host_inputs(
     settings: Settings, workdir: str, target_workdir: str
 ) -> HostInputs:
     profile = settings.profile
-    config_patches, config_dsts = build_config_patches(profile)
+    config_patches = build_config_patches(profile)
     local_claude_md_patches = build_local_claude_md_patch(workdir, target_workdir)
     volumes, stack_domains = build_stack_volumes(
         set(settings.stack_names), settings.memory_mib
@@ -656,7 +663,6 @@ def prepare_host_inputs(
         ),
         volumes=volumes,
         domains=(*settings.extra_domains, *stack_domains),
-        config_dsts=tuple(config_dsts),
     )
 
 
@@ -707,70 +713,64 @@ def build_root_script(
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-async def prepare_sandbox(
-    sandbox: Sandbox,
-    settings: Settings,
-    host: HostInputs,
-    target_workdir: str,
-    resuming: bool,
+async def exec_root_script(sandbox: Sandbox, script: str, step: str) -> None:
+    if not script:
+        return
+    log(f"> {step}")
+    result = await sandbox.exec("sh", ["-c", script], user="root")
+    check_result(result, "prepare sandbox as root")
+
+
+async def prepare_fresh_sandbox(
+    sandbox: Sandbox, settings: Settings, host: HostInputs, target_workdir: str
 ) -> str:
-    """Brings the sandbox into a ready state. Returns the pinned base sha."""
-    if resuming:
-        # base_sha was pinned by the session that provisioned this sandbox;
-        # re-resolving target_branch here would drift from what's checked out.
-        result = await sandbox.exec("cat", [BASE_SHA_FILE])
-        check_result(result, "read pinned base sha from sandbox")
-        base_sha = result.stdout_text.strip()
-        chown_paths = None
-    else:
-        base_sha = host.target_sha
-        chown_paths = [
-            target_workdir,
-            "/home/msb/.claude",
-            "/home/msb/.copilot",
-            *host.config_dsts,
-        ]
+    """Brings a newly created sandbox into a ready state. Returns the base sha."""
+    chown_paths = [target_workdir, *profile_state_dirs(settings.profile)]
+    await exec_root_script(
+        sandbox,
+        build_root_script(chown_paths, settings.stack_names),
+        "adjust ownership and set up stacks",
+    )
 
-    root_script = build_root_script(chown_paths, settings.stack_names)
-    if root_script:
-        log(
-            "> adjust ownership and set up stacks" if chown_paths else "> set up stacks"
-        )
-        result = await sandbox.exec("sh", ["-c", root_script], user="root")
-        check_result(result, "prepare sandbox as root")
-
-    if not resuming:
-        log(
-            f"> checking out latest {settings.target_branch} and applying git configuration"
-        )
-        name, email = host_git_identity()
-        git_script_lines = [
-            "set -e",
-            f"git reset --hard {shlex.quote(base_sha)}",
-            # repoint the current branch to target_branch (HEAD already
-            # matches base_sha, so this doesn't touch the working tree)
-            # so it matches the reference branch instead of whatever
-            # branch happened to be checked out on the host
-            f"git checkout -B {shlex.quote(settings.target_branch)}",
-            f"echo {shlex.quote(base_sha)} > {shlex.quote(BASE_SHA_FILE)}",
-            # clear potential signing configuration (would fail due to missing keys anyways)
-            "git config --unset gpg.format || true",
-            "git config --unset commit.gpgsign || true",
-        ]
-        if name:
-            git_script_lines.append(
-                f"git config --global user.name {shlex.quote(name)}"
-            )
-        if email:
-            git_script_lines.append(
-                f"git config --global user.email {shlex.quote(email)}"
-            )
-        result = await sandbox.exec(
-            "sh", ["-c", "\n".join(git_script_lines)], cwd=target_workdir
-        )
-        check_result(result, "prepare sandbox repository")
-
+    log(
+        f"> checking out latest {settings.target_branch} and applying git configuration"
+    )
+    base_sha = host.target_sha
+    name, email = host_git_identity()
+    git_script_lines = [
+        "set -e",
+        f"git reset --hard {shlex.quote(base_sha)}",
+        # repoint the current branch to target_branch (HEAD already
+        # matches base_sha, so this doesn't touch the working tree)
+        # so it matches the reference branch instead of whatever
+        # branch happened to be checked out on the host
+        f"git checkout -B {shlex.quote(settings.target_branch)}",
+        f"echo {shlex.quote(base_sha)} > {shlex.quote(BASE_SHA_FILE)}",
+        # clear potential signing configuration (would fail due to missing keys anyways)
+        "git config --unset gpg.format || true",
+        "git config --unset commit.gpgsign || true",
+    ]
+    if name:
+        git_script_lines.append(f"git config --global user.name {shlex.quote(name)}")
+    if email:
+        git_script_lines.append(f"git config --global user.email {shlex.quote(email)}")
+    result = await sandbox.exec(
+        "sh", ["-c", "\n".join(git_script_lines)], cwd=target_workdir
+    )
+    check_result(result, "prepare sandbox repository")
     return base_sha
+
+
+async def prepare_resumed_sandbox(sandbox: Sandbox, settings: Settings) -> str:
+    """Re-runs the stack setup on a resumed sandbox. Returns the pinned base sha."""
+    # base_sha was pinned by the session that provisioned this sandbox;
+    # re-resolving target_branch here would drift from what's checked out.
+    result = await sandbox.exec("cat", [BASE_SHA_FILE])
+    check_result(result, "read pinned base sha from sandbox")
+    await exec_root_script(
+        sandbox, build_root_script(None, settings.stack_names), "set up stacks"
+    )
+    return result.stdout_text.strip()
 
 
 async def run_session(sandbox: Sandbox, settings: Settings, target_workdir: str) -> int:
@@ -826,9 +826,12 @@ async def run(
     keep_alive = False
     uncollected = False
     try:
-        base_sha = await prepare_sandbox(
-            sandbox, settings, host, target_workdir, resuming
-        )
+        if resuming:
+            base_sha = await prepare_resumed_sandbox(sandbox, settings)
+        else:
+            base_sha = await prepare_fresh_sandbox(
+                sandbox, settings, host, target_workdir
+            )
 
         log(f"> creating worktree for branch {settings.branch}")
         worktree_path, worktree_created = create_worktree(
