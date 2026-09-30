@@ -22,7 +22,7 @@ docker save msb-base:latest | msb load
 ## Usage
 
 ```sh
-ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python]
+ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python,docker]
 ```
 
 - `<branch>` - name of the branch/worktree created under `/tmp/claude/<repo-name>-<branch>` to
@@ -31,7 +31,8 @@ ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python]
 - `--ref` - optional reference branch to start off of (default: `master`).
 - `--stacks` - comma-separated language/framework stacks to enable (or set `MSB_STACKS`).
   For each stack, mounts its host package cache into the sandbox and opens network egress
-  to its package registry. Choices: `dotnet`, `node`, `dart`, `rust`, `python`.
+  to its package registry. Choices: `dotnet`, `node`, `dart`, `rust`, `python`, `docker`
+  (`docker` starts `dockerd` in the sandbox and allows Docker Hub egress).
 - `--context` - pass an additional git repository as a context/reference which
   will be mounted read-only into the sandbox
 - `--no-memory` - disable the persistent cross-project agent memory mount (see below)

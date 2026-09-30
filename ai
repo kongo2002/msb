@@ -132,6 +132,7 @@ class Stack:
         tuple[str, str], ...
     ]  # (host path rel to $HOME, absolute sandbox path)
     extra_domains: tuple[str, ...] = ()
+    root_script: str = ""  # run as root inside the sandbox before the CLI starts
 
 
 STACKS: dict[str, Stack] = {
@@ -169,6 +170,18 @@ STACKS: dict[str, Stack] = {
         "python",
         ((".cache/uv", "/home/msb/.cache/uv"),),
         extra_domains=("pypi.org", "files.pythonhosted.org"),
+    ),
+    "docker": Stack(
+        "docker",
+        (),
+        extra_domains=(
+            "registry-1.docker.io",
+            "auth.docker.io",
+            "production.cloudflare.docker.com",
+            "production.cloudfront.docker.com",
+        ),
+        # fully detached, otherwise exec blocks on (or reaps) the daemon
+        root_script="setsid nohup dockerd >/var/log/dockerd.log 2>&1 &",
     ),
 }
 
@@ -557,6 +570,15 @@ async def main() -> None:
             result = await sandbox.exec("sh", ["-c", chown_script], user="root")
             if result.exit_code != 0:
                 sys.exit(f"failed to adjust ownership: {result.stderr_text}")
+
+            for stack_name in sorted(stack_names):
+                root_script = STACKS[stack_name].root_script
+                if not root_script:
+                    continue
+                log(f"> setting up {stack_name}")
+                result = await sandbox.exec("sh", ["-c", root_script], user="root")
+                if result.exit_code != 0:
+                    sys.exit(f"failed to set up {stack_name}: {result.stderr_text}")
 
             log(f"> checking out latest {target_branch} and applying git configuration")
             name, email = host_git_identity()
