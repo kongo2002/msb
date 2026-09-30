@@ -10,7 +10,9 @@ import argparse
 import asyncio
 import hashlib
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -132,8 +134,11 @@ class Stack:
         tuple[str, str], ...
     ]  # (host path rel to $HOME, absolute sandbox path)
     extra_domains: tuple[str, ...] = ()
+    tmpfs: tuple[tuple[str, int], ...] = ()  # (absolute sandbox path, size in MiB)
     root_script: str = ""  # run as root inside the sandbox before the CLI starts
 
+
+DOCKER_IMAGES_SANDBOX_PATH = "/home/msb/.docker-images"
 
 STACKS: dict[str, Stack] = {
     "dotnet": Stack(
@@ -174,6 +179,8 @@ STACKS: dict[str, Stack] = {
     "docker": Stack(
         "docker",
         (),
+        # overlay2 can't use the (overlay) rootfs as upperdir
+        tmpfs=(("/var/lib/docker", 4096),),
         extra_domains=(
             "registry-1.docker.io",
             "auth.docker.io",
@@ -181,7 +188,15 @@ STACKS: dict[str, Stack] = {
             "production.cloudfront.docker.com",
         ),
         # fully detached, otherwise exec blocks on (or reaps) the daemon
-        root_script="setsid nohup dockerd >/var/log/dockerd.log 2>&1 &",
+        root_script=f"""
+setsid nohup dockerd >/var/log/dockerd.log 2>&1 &
+setsid nohup sh -c '
+    until docker info >/dev/null 2>&1; do sleep 1; done
+    for f in {DOCKER_IMAGES_SANDBOX_PATH}/*/*.tar; do
+        [ -e "$f" ] && docker load -i "$f"
+    done
+' >/var/log/docker-load.log 2>&1 &
+""",
     ),
 }
 
@@ -232,8 +247,48 @@ def build_stack_volumes(
             host_path = os.path.expanduser(f"~/{host_rel}")
             os.makedirs(host_path, exist_ok=True)
             volumes[sandbox_path] = Volume.bind(host_path)
+        for sandbox_path, size_mib in stack.tmpfs:
+            volumes[sandbox_path] = Volume.tmpfs(size_mib=size_mib)
         extra_domains.extend(stack.extra_domains)
     return volumes, tuple(extra_domains)
+
+
+def build_docker_image_volumes(images: list[str]) -> dict[str, object]:
+    """Exports host docker images as tarballs (cached per image ID) and mounts
+    one directory per image, so only the requested images get loaded."""
+    volumes: dict[str, object] = {}
+    for image in images:
+        result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            sys.exit(f"docker image not found on host (pull it first): {image}")
+        image_id = result.stdout.strip().removeprefix("sha256:")[:12]
+        key = re.sub(r"[^A-Za-z0-9_.-]", "_", image)
+        host_dir = os.path.expanduser(f"~/.msb/docker-images/{key}")
+        tarball = os.path.join(host_dir, f"{image_id}.tar")
+        if not os.path.exists(tarball):
+            # drops tarballs of outdated image versions
+            shutil.rmtree(host_dir, ignore_errors=True)
+            os.makedirs(host_dir)
+            log(f"> exporting docker image {image}")
+            tmp = f"{tarball}.tmp"
+            saved = subprocess.run(
+                ["docker", "save", "-o", tmp, image],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if saved.returncode != 0:
+                sys.exit(f"failed to export docker image {image}: {saved.stderr}")
+            os.rename(tmp, tarball)
+        volumes[f"{DOCKER_IMAGES_SANDBOX_PATH}/{key}"] = Volume.bind(
+            host_dir, readonly=True
+        )
+    return volumes
 
 
 MEMORY_SANDBOX_PATH = "/home/msb/.ai-memory"
@@ -482,6 +537,16 @@ async def main() -> None:
     config_patches, config_dsts = build_config_patches(profile)
     local_claude_md_patches = build_local_claude_md_patch(workdir, target_workdir)
     stack_volumes, stack_domains = build_stack_volumes(stack_names)
+
+    docker_images = [
+        image.strip()
+        for image in os.environ.get("MSB_DOCKER_IMAGES", "").split(",")
+        if image.strip()
+    ]
+    if docker_images:
+        if "docker" not in stack_names:
+            sys.exit("MSB_DOCKER_IMAGES requires the docker stack (--stacks docker)")
+        stack_volumes.update(build_docker_image_volumes(docker_images))
 
     if not args.no_memory:
         stack_volumes.update(build_memory_volume(profile))

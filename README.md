@@ -54,6 +54,9 @@ Set via environment variables on the host before running `ai`:
 - `MSB_IMAGE` - override the sandbox image (default: `msb-base:latest`).
 - `MSB_EXTRA_DOMAINS` - comma-separated list of extra domains to allow through the sandbox's
   network egress policy, on top of the profile's defaults.
+- `MSB_DOCKER_IMAGES` - comma-separated host docker images (e.g. `postgres:16,redis:7`) to
+  preload into the sandbox's docker (requires the `docker` stack). Images must already be
+  pulled on the host; exports are cached in `~/.msb/docker-images/`.
 - `MSB_STACKS` - comma-separated stacks, alternative to `--stacks`. Both are merged together.
 
 Each profile also mirrors selected host config into the sandbox if present (e.g.

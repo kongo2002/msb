@@ -103,7 +103,8 @@ RUN mkdir -p /home/msb/.nuget/packages \
     /home/msb/.pub-cache \
     /home/msb/.cargo/registry \
     /home/msb/.cargo/git \
-    /home/msb/.cache/uv
+    /home/msb/.cache/uv \
+    /home/msb/.docker-images
 
 # fzf (the version shipped with ubuntu is _old_)
 ADD --chown=msb:msb ./assets/zshrc /home/msb/.zshrc
