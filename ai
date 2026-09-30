@@ -339,8 +339,8 @@ async def append_memory_instructions(sandbox: Sandbox, rel_path: str) -> None:
     quoted_text = shlex.quote(MEMORY_INSTRUCTIONS)
     cmd = (
         f"mkdir -p {quoted_dst} && touch {quoted_target} && "
-        f"grep -qF {quoted_text} {quoted_target} || "
-        f"printf '\\n%s\\n' {quoted_text} >> {quoted_target}"
+        f"{{ grep -qF {quoted_text} {quoted_target} || "
+        f"printf '\\n%s\\n' {quoted_text} >> {quoted_target}; }}"
     )
     result = await sandbox.exec("sh", ["-c", cmd])
     check_result(result, f"append memory instructions to {dst}")
