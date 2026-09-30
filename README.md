@@ -57,6 +57,8 @@ Set via environment variables on the host before running `ai`:
 - `MSB_DOCKER_IMAGES` - comma-separated host docker images (e.g. `postgres:16,redis:7`) to
   preload into the sandbox's docker (requires the `docker` stack). Images must already be
   pulled on the host; exports are cached in `~/.msb/docker-images/`.
+- `MSB_CPUS` / `MSB_MEMORY_MIB` - sandbox vCPUs and memory in MiB (default: `4` / `4096`).
+  With the `docker` stack, 50% of the memory is used as the docker data tmpfs.
 - `MSB_STACKS` - comma-separated stacks, alternative to `--stacks`. Both are merged together.
 
 Each profile also mirrors selected host config into the sandbox if present (e.g.

@@ -33,6 +33,8 @@ from microsandbox import (
 )
 
 DEFAULT_IMAGE_TAG = "msb-base:latest"
+DEFAULT_CPUS = 4
+DEFAULT_MEMORY_MIB = 4096
 
 # Statuses of a same-named leftover sandbox we can safely reconnect to instead
 # of tearing down and recreating from scratch.
@@ -134,7 +136,8 @@ class Stack:
         tuple[str, str], ...
     ]  # (host path rel to $HOME, absolute sandbox path)
     extra_domains: tuple[str, ...] = ()
-    tmpfs: tuple[tuple[str, int], ...] = ()  # (absolute sandbox path, size in MiB)
+    # (absolute sandbox path, share of the sandbox memory in percent)
+    tmpfs: tuple[tuple[str, int], ...] = ()
     root_script: str = ""  # run as root inside the sandbox before the CLI starts
 
 
@@ -180,7 +183,7 @@ STACKS: dict[str, Stack] = {
         "docker",
         (),
         # overlay2 can't use the (overlay) rootfs as upperdir
-        tmpfs=(("/var/lib/docker", 4096),),
+        tmpfs=(("/var/lib/docker", 50),),
         extra_domains=(
             "registry-1.docker.io",
             "auth.docker.io",
@@ -236,8 +239,17 @@ def build_local_claude_md_patch(workdir: str, target_workdir: str) -> list:
     return [Patch.copy_file(src=host_path, dst=f"{target_workdir}/CLAUDE.md")]
 
 
+def env_positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    if not raw.strip().isdigit() or int(raw) < 1:
+        sys.exit(f"{name} must be a positive integer, got: {raw!r}")
+    return int(raw)
+
+
 def build_stack_volumes(
-    stack_names: set[str],
+    stack_names: set[str], memory_mib: int
 ) -> tuple[dict[str, object], tuple[str, ...]]:
     volumes: dict[str, object] = {}
     extra_domains: list[str] = []
@@ -247,8 +259,8 @@ def build_stack_volumes(
             host_path = os.path.expanduser(f"~/{host_rel}")
             os.makedirs(host_path, exist_ok=True)
             volumes[sandbox_path] = Volume.bind(host_path)
-        for sandbox_path, size_mib in stack.tmpfs:
-            volumes[sandbox_path] = Volume.tmpfs(size_mib=size_mib)
+        for sandbox_path, percent in stack.tmpfs:
+            volumes[sandbox_path] = Volume.tmpfs(size_mib=memory_mib * percent // 100)
         extra_domains.extend(stack.extra_domains)
     return volumes, tuple(extra_domains)
 
@@ -536,7 +548,9 @@ async def main() -> None:
     sandbox_name = sandbox_name_for(workdir, profile.name, args.branch)
     config_patches, config_dsts = build_config_patches(profile)
     local_claude_md_patches = build_local_claude_md_patch(workdir, target_workdir)
-    stack_volumes, stack_domains = build_stack_volumes(stack_names)
+    cpus = env_positive_int("MSB_CPUS", DEFAULT_CPUS)
+    memory_mib = env_positive_int("MSB_MEMORY_MIB", DEFAULT_MEMORY_MIB)
+    stack_volumes, stack_domains = build_stack_volumes(stack_names, memory_mib)
 
     docker_images = [
         image.strip()
@@ -572,8 +586,8 @@ async def main() -> None:
     sandbox = await Sandbox.connect_or_create(
         sandbox_name,
         image=os.environ.get("MSB_IMAGE", DEFAULT_IMAGE_TAG),
-        cpus=2,
-        memory=2048,
+        cpus=cpus,
+        memory=memory_mib,
         network=build_network(
             profile.extra_domains, (*user_extra_domains, *stack_domains)
         ),
