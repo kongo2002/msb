@@ -23,6 +23,7 @@ from microsandbox import (
     Action,
     Destination,
     Image,
+    ImageSource,
     Network,
     NetworkPolicy,
     Patch,
@@ -38,6 +39,7 @@ from microsandbox import (
 DEFAULT_IMAGE_TAG = "msb-base:latest"
 DEFAULT_CPUS = 4
 DEFAULT_MEMORY_MIB = 4096
+DEFAULT_ROOT_DISK_MIB = 16384
 
 # Statuses of a same-named leftover sandbox we can safely reconnect to instead
 # of tearing down and recreating from scratch.
@@ -525,7 +527,7 @@ class Settings:
     use_memory: bool
     verbose: bool
     token: str = field(repr=False)
-    image: str
+    image: ImageSource
     cpus: int
     memory_mib: int
     extra_domains: tuple[str, ...]
@@ -597,6 +599,8 @@ def parse_settings() -> Settings:
             "MSB_DOCKER_IMAGES requires the docker stack (--stacks docker)"
         )
 
+    root_disk_size = env_positive_int("MSB_ROOT_DISK_MIB", DEFAULT_ROOT_DISK_MIB)
+
     return Settings(
         branch=args.branch,
         profile=profile,
@@ -608,7 +612,7 @@ def parse_settings() -> Settings:
         token=token,
         image=Image.oci(
             os.environ.get("MSB_IMAGE", DEFAULT_IMAGE_TAG),
-            root_disk=RootDisk.managed(8192),
+            root_disk=RootDisk.managed(root_disk_size),
         ),
         cpus=env_positive_int("MSB_CPUS", DEFAULT_CPUS),
         memory_mib=env_positive_int("MSB_MEMORY_MIB", DEFAULT_MEMORY_MIB),
