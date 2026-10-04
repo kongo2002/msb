@@ -22,9 +22,11 @@ from dataclasses import dataclass, field
 from microsandbox import (
     Action,
     Destination,
+    Image,
     Network,
     NetworkPolicy,
     Patch,
+    RootDisk,
     Rule,
     Sandbox,
     SandboxNotFoundError,
@@ -604,7 +606,10 @@ def parse_settings() -> Settings:
         use_memory=not args.no_memory,
         verbose=args.verbose,
         token=token,
-        image=os.environ.get("MSB_IMAGE", DEFAULT_IMAGE_TAG),
+        image=Image.oci(
+            os.environ.get("MSB_IMAGE", DEFAULT_IMAGE_TAG),
+            root_disk=RootDisk.managed(8192),
+        ),
         cpus=env_positive_int("MSB_CPUS", DEFAULT_CPUS),
         memory_mib=env_positive_int("MSB_MEMORY_MIB", DEFAULT_MEMORY_MIB),
         extra_domains=tuple(split_csv(os.environ.get("MSB_EXTRA_DOMAINS", ""))),
