@@ -404,7 +404,8 @@ def create_worktree(
     keep-alive round is reused (created=False) so already-transplanted commits
     aren't lost."""
     repo_name = os.path.basename(os.path.normpath(workdir))
-    worktree_path = f"/tmp/{profile.name}/{repo_name}-{branch}"
+    sanitized_branch = branch.replace("/", "-")
+    worktree_path = f"/tmp/{profile.name}/{repo_name}-{sanitized_branch}"
     if os.path.isdir(worktree_path):
         return worktree_path, False
     result = run_host(
