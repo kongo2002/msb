@@ -72,6 +72,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 
 ENV PATH="$PATH:$FLUTTER_HOME/bin:$PUB_CACHE/bin:/home/msb/.local/bin:$CARGO_HOME/bin"
 
+RUN rustup component add rustfmt clippy
+
 # uv (python)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
  && uv python install 3.14 --default
