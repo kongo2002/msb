@@ -203,7 +203,12 @@ STACKS: dict[str, Stack] = {
             (".cargo/registry", "/home/msb/.cargo/registry"),
             (".cargo/git", "/home/msb/.cargo/git"),
         ),
-        extra_domains=("index.crates.io", "static.crates.io", "crates.io"),
+        extra_domains=(
+            "index.crates.io",
+            "static.crates.io",
+            "crates.io",
+            "static.rust-lang.org",
+        ),
     ),
     "python": Stack(
         "python",
