@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # general dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git unzip xz-utils zip ca-certificates ripgrep less zsh vim iptables libnss3-tools
+    curl git unzip xz-utils zip ca-certificates ripgrep less zsh vim iptables libnss3-tools gcc
 
 # nodejs
 RUN curl -sL https://deb.nodesource.com/setup_25.x -o nodesource_setup.sh \
