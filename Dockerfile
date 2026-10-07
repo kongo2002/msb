@@ -102,7 +102,8 @@ RUN node -e "const fs=require('fs');const p='/home/msb/.claude.json';const c=fs.
 # pre-create directories that may be later bind mounted
 RUN mkdir -p /home/msb/.nuget/packages \
     /home/msb/.local/share/pnpm/store \
-    /home/msb/.pub-cache \
+    /home/msb/.pub-cache/hosted \
+    /home/msb/.pub-cache/hosted-hashes \
     /home/msb/.cargo/registry \
     /home/msb/.cargo/git \
     /home/msb/.cache/uv \
