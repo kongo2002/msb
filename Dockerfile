@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ARG FLUTTER_VERSION="3.44.8"
 ARG JUST_VERSION="1.58.0"
@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # general dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git unzip xz-utils zip ca-certificates ripgrep less zsh vim iptables libnss3-tools build-essential
+    curl git unzip xz-utils zip ca-certificates ripgrep less zsh vim iptables libnss3-tools build-essential libicu78
 
 # nodejs
 RUN curl -sL https://deb.nodesource.com/setup_25.x -o nodesource_setup.sh \
