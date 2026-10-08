@@ -532,7 +532,7 @@ class Settings:
     profile: Profile
     target_branch: str
     stack_names: frozenset[str]
-    context_path: str | None
+    context_paths: tuple[str, ...]
     use_memory: bool
     verbose: bool
     token: str = field(repr=False)
@@ -568,7 +568,11 @@ def parse_settings() -> Settings:
     )
     parser.add_argument(
         "--context",
-        help="path to a second, separate host git repo to mount read-only for reference",
+        action="append",
+        help=(
+            "path to a second, separate host git repo to mount read-only for "
+            "reference (repeatable for multiple context repos)"
+        ),
     )
     parser.add_argument(
         "--no-memory",
@@ -582,6 +586,17 @@ def parse_settings() -> Settings:
     )
     args = parser.parse_args()
     profile = PROFILES[args.profile]
+
+    context_paths = tuple(args.context or ())
+    context_basenames = [os.path.basename(os.path.normpath(p)) for p in context_paths]
+    duplicate_basenames = {
+        name for name in context_basenames if context_basenames.count(name) > 1
+    }
+    if duplicate_basenames:
+        raise FatalError(
+            "--context paths must have distinct directory names, duplicates: "
+            f"{', '.join(sorted(duplicate_basenames))}"
+        )
 
     stack_names = frozenset(
         split_csv(f"{args.stacks},{os.environ.get('MSB_STACKS', '')}")
@@ -615,7 +630,7 @@ def parse_settings() -> Settings:
         profile=profile,
         target_branch=args.ref or os.environ.get("MSB_REFERENCE") or "master",
         stack_names=stack_names,
-        context_path=args.context,
+        context_paths=context_paths,
         use_memory=not args.no_memory,
         verbose=args.verbose,
         token=token,
@@ -660,12 +675,13 @@ def prepare_host_inputs(
     if settings.use_memory:
         volumes.update(build_memory_volume(profile))
 
-    if settings.context_path:
-        context_sandbox_path, context_volume = build_context_repo_volume(
-            settings.context_path
-        )
-        volumes.update(context_volume)
-        log(f"> mounting context repo at {context_sandbox_path} (read-only)")
+    if settings.context_paths:
+        for context_path in settings.context_paths:
+            context_sandbox_path, context_volume = build_context_repo_volume(
+                context_path
+            )
+            volumes.update(context_volume)
+            log(f"> mounting context repo at {context_sandbox_path} (read-only)")
 
     if local_claude_md_patches:
         log("> mirroring untracked local CLAUDE.md into sandbox")
