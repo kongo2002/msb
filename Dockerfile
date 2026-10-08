@@ -40,6 +40,9 @@ RUN PREFIX="/usr/local" && \
 # copilot
 RUN pnpm add -g @github/copilot
 
+# language servers (used by claude LSP plugins)
+RUN pnpm add -g typescript typescript-language-server pyright
+
 # dotnet
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir /opt/dotnet
 
@@ -72,7 +75,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 
 ENV PATH="$PATH:$FLUTTER_HOME/bin:$PUB_CACHE/bin:/home/msb/.local/bin:$CARGO_HOME/bin"
 
-RUN rustup component add rustfmt clippy
+RUN rustup component add rustfmt clippy rust-analyzer
 
 # uv (python)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
