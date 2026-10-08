@@ -170,7 +170,12 @@ class Stack:
     # (absolute sandbox path, share of the sandbox memory in percent)
     tmpfs: tuple[tuple[str, int], ...] = ()
     root_script: str = ""  # run as root inside the sandbox before the CLI starts
+    # `plugin@marketplace` ids installed for the claude profile
+    claude_plugins: tuple[str, ...] = ()
 
+
+CLAUDE_PLUGIN_MARKETPLACE = "claude-plugins-official"
+CLAUDE_PLUGIN_MARKETPLACE_REPO = "anthropics/claude-plugins-official"
 
 DOCKER_IMAGES_SANDBOX_PATH = "/home/msb/.docker-images"
 
@@ -190,6 +195,7 @@ STACKS: dict[str, Stack] = {
         "node",
         ((".local/share/pnpm/store", "/home/msb/.local/share/pnpm/store"),),
         extra_domains=("registry.npmjs.org",),
+        claude_plugins=(f"typescript-lsp@{CLAUDE_PLUGIN_MARKETPLACE}",),
     ),
     "dart": Stack(
         "dart",
@@ -213,11 +219,13 @@ STACKS: dict[str, Stack] = {
             "crates.io",
             "static.rust-lang.org",
         ),
+        claude_plugins=(f"rust-analyzer-lsp@{CLAUDE_PLUGIN_MARKETPLACE}",),
     ),
     "python": Stack(
         "python",
         ((".cache/uv", "/home/msb/.cache/uv"),),
         extra_domains=("pypi.org", "files.pythonhosted.org"),
+        claude_plugins=(f"pyright-lsp@{CLAUDE_PLUGIN_MARKETPLACE}",),
     ),
     "docker": Stack(
         "docker",
@@ -812,6 +820,27 @@ async def prepare_resumed_sandbox(sandbox: Sandbox, settings: Settings) -> str:
     return result.stdout_text.strip()
 
 
+async def install_claude_plugins(sandbox: Sandbox, settings: Settings) -> None:
+    """Installs the stacks' plugins; both claude commands are idempotent, so
+    this also runs on resumed sandboxes."""
+    if settings.profile.name != "claude":
+        return
+    plugins = dict.fromkeys(
+        plugin
+        for stack_name in sorted(settings.stack_names)
+        for plugin in STACKS[stack_name].claude_plugins
+    )
+    if not plugins:
+        return
+    log(f"> installing claude plugins: {', '.join(plugins)}")
+    commands = [
+        f"claude plugin marketplace add {shlex.quote(CLAUDE_PLUGIN_MARKETPLACE_REPO)}",
+        *(f"claude plugin install {shlex.quote(plugin)}" for plugin in plugins),
+    ]
+    result = await sandbox.exec("sh", ["-c", " && ".join(commands)])
+    check_result(result, "install claude plugins")
+
+
 async def run_session(sandbox: Sandbox, settings: Settings, target_workdir: str) -> int:
     """Runs the AI CLI, then an interactive shell. Returns the CLI's exit code."""
     profile = settings.profile
@@ -873,6 +902,7 @@ async def run(
             base_sha = await prepare_fresh_sandbox(
                 sandbox, settings, host, target_workdir
             )
+        await install_claude_plugins(sandbox, settings)
 
         log(f"> creating worktree for branch {settings.branch}")
         worktree_path, worktree_created = create_worktree(
