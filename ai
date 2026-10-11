@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -49,6 +50,11 @@ RESUMABLE_STATUSES = frozenset(
 
 KEEP_ALIVE_MARKER = "/home/msb/.ai-keep-alive"
 BASE_SHA_FILE = "/home/msb/.ai-sandbox-base-sha"
+
+# inline mode: key replacing the branch in the sandbox name, and the format of
+# the branch created for the sandbox's commits
+INLINE_SANDBOX_KEY = "@inline"
+INLINE_BRANCH_FORMAT = "inline-%Y%m%d-%H%M"
 
 _verbose = False
 
@@ -476,24 +482,49 @@ async def collect_sandbox_bundle(
     return bundle_result.stdout_bytes
 
 
+def write_bundle(bundle: bytes) -> str:
+    fd, bundle_path = tempfile.mkstemp(suffix=".bundle", prefix="ai-sandbox-")
+    with os.fdopen(fd, "wb") as f:
+        f.write(bundle)
+    return bundle_path
+
+
+def bundle_failure(bundle_path: str, step: str, detail: str) -> FatalError:
+    return FatalError(
+        f"{step} failed: {detail.strip()}\n"
+        f"sandbox commits preserved at {bundle_path}\n"
+        f"  inspect:  git fetch {shlex.quote(bundle_path)} HEAD\n"
+        "            git log --oneline FETCH_HEAD\n"
+        f"  keep:     git fetch {shlex.quote(bundle_path)} HEAD:refs/heads/<name>\n"
+        "  pick:     git cherry-pick <sha>"
+    )
+
+
+def apply_bundle_to_new_branch(workdir: str, bundle: bytes) -> str:
+    """Stores the bundled commits as a new branch in the host repo without
+    touching its working tree or checked out branch. Returns the branch name."""
+    bundle_path = write_bundle(bundle)
+    branch = time.strftime(INLINE_BRANCH_FORMAT)
+    result = run_host(
+        ["git", "fetch", "--quiet", bundle_path, f"HEAD:refs/heads/{branch}"], workdir
+    )
+    if result.returncode != 0:
+        raise bundle_failure(
+            bundle_path, "creating branch from sandbox bundle", result.stderr
+        )
+    os.unlink(bundle_path)
+    return branch
+
+
 def apply_bundle_to_worktree(worktree_path: str, bundle: bytes, base_sha: str) -> None:
     """Brings the bundled commits onto the worktree branch: a fast-forward if
     the branch still sits at base_sha (keeping the sandbox shas), otherwise a
     cherry-pick on top of the branch tip. A conflicting cherry-pick is left in
     progress for the user to resolve."""
-    fd, bundle_path = tempfile.mkstemp(suffix=".bundle", prefix="ai-sandbox-")
-    with os.fdopen(fd, "wb") as f:
-        f.write(bundle)
+    bundle_path = write_bundle(bundle)
 
     def fail(step: str, detail: str) -> FatalError:
-        return FatalError(
-            f"{step} failed: {detail.strip()}\n"
-            f"sandbox commits preserved at {bundle_path}\n"
-            f"  inspect:  git fetch {shlex.quote(bundle_path)} HEAD\n"
-            "            git log --oneline FETCH_HEAD\n"
-            f"  keep:     git fetch {shlex.quote(bundle_path)} HEAD:refs/heads/<name>\n"
-            "  pick:     git cherry-pick <sha>"
-        )
+        return bundle_failure(bundle_path, step, detail)
 
     result = run_host(["git", "fetch", "--quiet", bundle_path, "HEAD"], worktree_path)
     if result.returncode != 0:
@@ -548,8 +579,9 @@ def build_network(
 
 @dataclass(frozen=True)
 class Settings:
-    branch: str
+    branch: str | None  # None in inline mode
     profile: Profile
+    inline: bool
     target_branch: str
     stack_names: frozenset[str]
     context_paths: tuple[str, ...]
@@ -572,7 +604,16 @@ def parse_settings() -> Settings:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "branch",
+        nargs="?",
         help="branch name for the worktree that captures the sandbox's changes",
+    )
+    parser.add_argument(
+        "--inline",
+        action="store_true",
+        help=(
+            "work on top of the current HEAD and store the sandbox's commits "
+            "as a new branch in this repo instead of a worktree (no branch argument)"
+        ),
     )
     parser.add_argument("--profile", choices=sorted(PROFILES), default="copilot")
     parser.add_argument(
@@ -606,6 +647,16 @@ def parse_settings() -> Settings:
     )
     args = parser.parse_args()
     profile = PROFILES[args.profile]
+
+    if args.inline and (args.branch or args.ref):
+        raise FatalError("--inline takes neither a branch nor --ref")
+    if not args.inline and not args.branch:
+        raise FatalError("a branch name is required (or use --inline)")
+    reference = (
+        "HEAD"
+        if args.inline
+        else args.ref or os.environ.get("MSB_REFERENCE") or "master"
+    )
 
     context_paths = tuple(args.context or ())
     context_basenames = [os.path.basename(os.path.normpath(p)) for p in context_paths]
@@ -648,7 +699,8 @@ def parse_settings() -> Settings:
     return Settings(
         branch=args.branch,
         profile=profile,
-        target_branch=args.ref or os.environ.get("MSB_REFERENCE") or "master",
+        inline=args.inline,
+        target_branch=reference,
         stack_names=stack_names,
         context_paths=context_paths,
         use_memory=not args.no_memory,
@@ -820,11 +872,17 @@ async def prepare_fresh_sandbox(
         "rm -rf .git/worktrees .git/hooks",
         "git stash clear",
         f"git reset --hard {shlex.quote(base_sha)}",
-        # repoint the current branch to target_branch (HEAD already
-        # matches base_sha, so this doesn't touch the working tree)
-        # so it matches the reference branch instead of whatever
-        # branch happened to be checked out on the host
-        f"git checkout -B {shlex.quote(settings.target_branch)}",
+        *(
+            []
+            if settings.inline
+            else [
+                # repoint the current branch to target_branch (HEAD already
+                # matches base_sha, so this doesn't touch the working tree)
+                # so it matches the reference branch instead of whatever
+                # branch happened to be checked out on the host
+                f"git checkout -B {shlex.quote(settings.target_branch)}",
+            ]
+        ),
         f"echo {shlex.quote(base_sha)} > {shlex.quote(BASE_SHA_FILE)}",
         # clear potential signing configuration (would fail due to missing keys anyways)
         "git config --unset gpg.format || true",
@@ -930,7 +988,9 @@ async def repin_base_sha(sandbox: Sandbox, target_workdir: str) -> None:
 async def run(
     settings: Settings, host: HostInputs, workdir: str, target_workdir: str
 ) -> int:
-    sandbox_name = sandbox_name_for(workdir, settings.profile.name, settings.branch)
+    sandbox_name = sandbox_name_for(
+        workdir, settings.profile.name, settings.branch or INLINE_SANDBOX_KEY
+    )
     sandbox, resuming = await provision_sandbox(settings, host, sandbox_name)
 
     keep_alive = False
@@ -944,10 +1004,11 @@ async def run(
             )
         await install_claude_plugins(sandbox, settings)
 
-        log(f"> creating worktree for branch {settings.branch}")
-        worktree_path, worktree_created = create_worktree(
-            workdir, base_sha, settings.branch, settings.profile
-        )
+        if settings.branch:
+            log(f"> creating worktree for branch {settings.branch}")
+            worktree_path, worktree_created = create_worktree(
+                workdir, base_sha, settings.branch, settings.profile
+            )
 
         # from here on the sandbox may hold work that exists nowhere else
         uncollected = True
@@ -959,7 +1020,7 @@ async def run(
             sandbox,
             target_workdir,
             base_sha,
-            f"WIP: {settings.profile.name} sandbox session ({settings.branch})",
+            f"WIP: {settings.profile.name} sandbox session ({settings.branch or 'inline'})",
         )
         uncollected = False
         if keep_alive and bundle is not None:
@@ -974,7 +1035,15 @@ async def run(
         elif not keep_alive:
             await sandbox.destroy()
 
-    if bundle is not None:
+    if settings.inline:
+        if bundle is None:
+            print("> no changes detected in sandbox", file=sys.stderr)
+        else:
+            branch = apply_bundle_to_new_branch(workdir, bundle)
+            print(
+                f"> transferred sandbox commits onto branch {branch}", file=sys.stderr
+            )
+    elif bundle is not None:
         apply_bundle_to_worktree(worktree_path, bundle, base_sha)
         print(
             f"> transferred sandbox commits onto {worktree_path} (branch {settings.branch})",

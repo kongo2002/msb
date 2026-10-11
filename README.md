@@ -29,6 +29,7 @@ ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python,do
   hold whatever the sandbox session changes.
 - `--profile` - which CLI to launch inside the sandbox (default: `copilot`).
 - `--ref` - optional reference branch to start off of (default: `master`).
+- `--inline` - no branch argument; runs on top of the current `HEAD` and stores the sandbox's commits as a new `inline-<timestamp>` branch in the current repo (no worktree, checkout untouched). Incompatible with `--ref`.
 - `--stacks` - comma-separated language/framework stacks to enable (or set `MSB_STACKS`).
   For each stack, mounts its host package cache into the sandbox read-only (overlaid with a
   tmpfs write layer, so sandbox writes never reach the host) and opens network egress
