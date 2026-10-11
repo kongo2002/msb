@@ -30,7 +30,8 @@ ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python,do
 - `--profile` - which CLI to launch inside the sandbox (default: `copilot`).
 - `--ref` - optional reference branch to start off of (default: `master`).
 - `--stacks` - comma-separated language/framework stacks to enable (or set `MSB_STACKS`).
-  For each stack, mounts its host package cache into the sandbox and opens network egress
+  For each stack, mounts its host package cache into the sandbox read-only (overlaid with a
+  tmpfs write layer, so sandbox writes never reach the host) and opens network egress
   to its package registry. Choices: `dotnet`, `node`, `dart`, `rust`, `python`, `docker`
   (`docker` starts `dockerd` in the sandbox and allows Docker Hub egress).
 - `--context` - pass an additional git repository as a context/reference which

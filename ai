@@ -165,7 +165,7 @@ class Stack:
     name: str
     mounts: tuple[
         tuple[str, str], ...
-    ]  # (host path rel to $HOME, absolute sandbox path)
+    ]  # (host cache path rel to $HOME, absolute sandbox cache path)
     extra_domains: tuple[str, ...] = ()
     # (absolute sandbox path, share of the sandbox memory in percent)
     tmpfs: tuple[tuple[str, int], ...] = ()
@@ -178,6 +178,11 @@ CLAUDE_PLUGIN_MARKETPLACE = "claude-plugins-official"
 CLAUDE_PLUGIN_MARKETPLACE_REPO = "anthropics/claude-plugins-official"
 
 DOCKER_IMAGES_SANDBOX_PATH = "/home/msb/.docker-images"
+# host caches are mounted read-only below HOST_CACHES_SANDBOX_PATH and overlaid
+# onto the tools' cache dirs; writes land in the tmpfs at CACHE_UPPER_SANDBOX_PATH
+HOST_CACHES_SANDBOX_PATH = "/home/msb/.host-caches"
+CACHE_UPPER_SANDBOX_PATH = "/home/msb/.cache-upper"
+CACHE_UPPER_MEMORY_PERCENT = 20
 
 STACKS: dict[str, Stack] = {
     "dotnet": Stack(
@@ -310,6 +315,10 @@ def env_positive_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def cache_key(sandbox_path: str) -> str:
+    return sandbox_path.strip("/").replace("/", "_")
+
+
 def build_stack_volumes(
     stack_names: set[str], memory_mib: int
 ) -> tuple[dict[str, object], tuple[str, ...]]:
@@ -320,10 +329,17 @@ def build_stack_volumes(
         for host_rel, sandbox_path in stack.mounts:
             host_path = os.path.expanduser(f"~/{host_rel}")
             os.makedirs(host_path, exist_ok=True)
-            volumes[sandbox_path] = Volume.bind(host_path)
+            volumes[f"{HOST_CACHES_SANDBOX_PATH}/{cache_key(sandbox_path)}"] = (
+                Volume.bind(host_path, readonly=True)
+            )
         for sandbox_path, percent in stack.tmpfs:
             volumes[sandbox_path] = Volume.tmpfs(size_mib=memory_mib * percent // 100)
         extra_domains.extend(stack.extra_domains)
+    if any(STACKS[name].mounts for name in stack_names):
+        # overlayfs can't use the (overlay) rootfs as upperdir
+        volumes[CACHE_UPPER_SANDBOX_PATH] = Volume.tmpfs(
+            size_mib=memory_mib * CACHE_UPPER_MEMORY_PERCENT // 100
+        )
     return volumes, tuple(extra_domains)
 
 
@@ -733,6 +749,26 @@ async def provision_sandbox(
     return sandbox, resuming
 
 
+def build_cache_overlay_script(stack_names: frozenset[str]) -> str:
+    """Overlays each read-only host cache with a sandbox-local writable layer.
+    Idempotent: a resumed sandbox may still have the mounts."""
+    lines = []
+    for name in sorted(stack_names):
+        for _, sandbox_path in STACKS[name].mounts:
+            key = cache_key(sandbox_path)
+            lower = f"{HOST_CACHES_SANDBOX_PATH}/{key}"
+            upper = f"{CACHE_UPPER_SANDBOX_PATH}/{key}"
+            target = shlex.quote(sandbox_path)
+            lines.append(
+                f"mkdir -p {upper}/data {upper}/work {target}\n"
+                f"chown 1001:1001 {upper}/data\n"
+                f"mountpoint -q {target} || mount -t overlay overlay "
+                f"-o lowerdir={lower},upperdir={upper}/data,workdir={upper}/work "
+                f"{target}"
+            )
+    return "\n".join(lines)
+
+
 def build_root_script(
     chown_paths: list[str] | None, stack_names: frozenset[str]
 ) -> str:
@@ -742,6 +778,9 @@ def build_root_script(
     if chown_paths is not None:
         lines.append("chown 1001:1001 /home/msb")
         lines.extend(f"chown -R 1001:1001 {shlex.quote(p)}" for p in chown_paths)
+    cache_overlays = build_cache_overlay_script(stack_names)
+    if cache_overlays:
+        lines.append(cache_overlays)
     for stack_name in sorted(stack_names):
         root_script = STACKS[stack_name].root_script
         if root_script:
