@@ -10,7 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
     PNPM_HOME=/usr/local/share/pnpm \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+    AI_SANDBOX=1
 
 # general dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -92,7 +93,8 @@ RUN git config --global --add safe.directory '*' \
  && mkdir -p /home/msb/workspace
 
 # dart protoc plugin
-RUN dart pub global activate protoc_plugin ${DART_PROTOC_PLUGIN_VERSION}
+RUN dart pub global activate protoc_plugin ${DART_PROTOC_PLUGIN_VERSION} \
+  && dart --disable-analytics
 
 # azure credentials provider
 RUN curl -fsSL https://aka.ms/install-artifacts-credprovider.sh | bash
