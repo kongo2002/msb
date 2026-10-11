@@ -779,6 +779,11 @@ async def prepare_fresh_sandbox(
     name, email = host_git_identity()
     git_script_lines = [
         "set -e",
+        # host-only state from the mirrored .git: worktree registrations block
+        # checkouts of branches that aren't even present here, hooks may call
+        # host tools
+        "rm -rf .git/worktrees .git/hooks",
+        "git stash clear",
         f"git reset --hard {shlex.quote(base_sha)}",
         # repoint the current branch to target_branch (HEAD already
         # matches base_sha, so this doesn't touch the working tree)
