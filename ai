@@ -199,11 +199,7 @@ STACKS: dict[str, Stack] = {
     ),
     "dart": Stack(
         "dart",
-        # git/, bin/ and global_packages/ embed absolute host paths
-        (
-            (".pub-cache/hosted", "/home/msb/.pub-cache/hosted"),
-            (".pub-cache/hosted-hashes", "/home/msb/.pub-cache/hosted-hashes"),
-        ),
+        (),
         # SDK tarballs come from storage.googleapis.com
         extra_domains=("pub.dev", "storage.googleapis.com"),
     ),
