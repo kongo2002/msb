@@ -22,14 +22,15 @@ docker save msb-base:latest | msb load
 ## Usage
 
 ```sh
-ai <branch> [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python,docker,playwright]
+ai [<branch>] [--worktree] [--profile copilot|claude] [--stacks dotnet,node,dart,rust,python,docker,playwright]
 ```
 
-- `<branch>` - name of the branch/worktree created under `/tmp/claude/<repo-name>-<branch>` to
-  hold whatever the sandbox session changes.
+- `<branch>` - optional. Without it, the sandbox runs on top of `HEAD` and its commits are stored
+  as a new `inline-<timestamp>` branch. Otherwise the name of the branch created in the current repo from the sandbox's commits (checkout
+  and working tree untouched). Based on the current `HEAD` by default; fails if the branch already exists.
 - `--profile` - which CLI to launch inside the sandbox (default: `copilot`).
-- `--ref` - optional reference branch to start off of (default: `master`).
-- `--inline` - no branch argument; runs on top of the current `HEAD` and stores the sandbox's commits as a new `inline-<timestamp>` branch in the current repo (no worktree, checkout untouched). Incompatible with `--ref`.
+- `--ref` - optional reference branch to start off of (default: `HEAD`, or `master` with `--worktree`). Requires a branch.
+- `--worktree` - capture the changes in a worktree under `/tmp/<profile>/<repo-name>-<branch>` instead of a plain branch. Resumes an existing worktree/branch. Requires a branch.
 - `--stacks` - comma-separated language/framework stacks to enable (or set `MSB_STACKS`).
   For each stack, mounts its host package cache into the sandbox read-only (overlaid with a
   tmpfs write layer, so sandbox writes never reach the host) and opens network egress
@@ -44,8 +45,8 @@ On exit:
 - if the sandbox working directory is dirty, commits the leftover changes there as
   `WIP: <profile> sandbox session (<branch>)`
 - transplants every commit made in the sandbox since it started (individually, history intact)
-  onto the new worktree/branch via `git format-patch` / `git am`
-- removes the worktree and branch again if nothing changed
+  onto the branch (or worktree) via `git format-patch` / `git am`
+- with `--worktree`, removes the worktree and branch again if nothing changed
 
 ## Configuration
 
