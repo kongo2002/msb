@@ -11,6 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DOTNET_NOLOGO=1 \
     PNPM_HOME=/usr/local/share/pnpm \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+    COPILOT_AUTO_UPDATE=false \
     AI_SANDBOX=1
 
 # general dependencies
