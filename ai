@@ -581,6 +581,16 @@ def build_network(
 
 
 @dataclass(frozen=True)
+class NugetSource:
+    name: str
+    user: str = field(repr=False)
+    password: str = field(repr=False)
+
+    def secret_names(self, index: int) -> tuple[str, str]:
+        return f"NUGET_{index}_USER", f"NUGET_{index}_PASSWORD"
+
+
+@dataclass(frozen=True)
 class Settings:
     branch: str | None  # None: store results in a generated branch name
     profile: Profile
@@ -596,11 +606,28 @@ class Settings:
     memory_mib: int
     extra_domains: tuple[str, ...]
     docker_images: tuple[str, ...]
-    nuget_credentials: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    nuget_sources: tuple[NugetSource, ...] = ()
 
 
 def split_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def parse_nuget_sources(raw: str) -> tuple[NugetSource, ...]:
+    """Parses `name=USER_VAR:PASSWORD_VAR,...`, where the vars are host env vars."""
+    sources = []
+    for entry in split_csv(raw):
+        name, _, var_names = entry.partition("=")
+        user, _, password = var_names.partition(":")
+        if not (name and user and password):
+            raise FatalError(
+                f"invalid MSB_NUGET_SOURCES entry {entry!r}, "
+                "expected name=USER_VAR:PASSWORD_VAR"
+            )
+        sources.append(NugetSource(name, user, password))
+    if len({source.name for source in sources}) != len(sources):
+        raise FatalError("MSB_NUGET_SOURCES contains duplicate source names")
+    return tuple(sources)
 
 
 def parse_settings() -> Settings:
@@ -701,15 +728,10 @@ def parse_settings() -> Settings:
             "MSB_DOCKER_IMAGES requires the docker stack (--stacks docker)"
         )
 
-    nuget_credentials = ()
-    nuget_user = os.environ.get("MSB_NUGET_USER")
-    nuget_password = os.environ.get("MSB_NUGET_PASSWORD")
-    if bool(nuget_user) != bool(nuget_password):
-        raise FatalError("MSB_NUGET_USER and MSB_NUGET_PASSWORD must be set together")
-    if nuget_user and nuget_password and "dotnet" in stack_names:
-        nuget_credentials = (
-            ("NUGET_USER", nuget_user),
-            ("NUGET_PASSWORD", nuget_password),
+    nuget_sources = parse_nuget_sources(os.environ.get("MSB_NUGET_SOURCES", ""))
+    if nuget_sources and "dotnet" not in stack_names:
+        raise FatalError(
+            "MSB_NUGET_SOURCES requires the dotnet stack (--stacks dotnet)"
         )
 
     root_disk_size = env_positive_int("MSB_ROOT_DISK_MIB", DEFAULT_ROOT_DISK_MIB)
@@ -732,7 +754,7 @@ def parse_settings() -> Settings:
         memory_mib=env_positive_int("MSB_MEMORY_MIB", DEFAULT_MEMORY_MIB),
         extra_domains=tuple(split_csv(os.environ.get("MSB_EXTRA_DOMAINS", ""))),
         docker_images=docker_images,
-        nuget_credentials=nuget_credentials,
+        nuget_sources=nuget_sources,
     )
 
 
@@ -815,7 +837,10 @@ async def provision_sandbox(
             ),
             *(
                 Secret.env(name, value=value, allow=list(NUGET_CREDENTIAL_DOMAINS))
-                for name, value in settings.nuget_credentials
+                for index, source in enumerate(settings.nuget_sources)
+                for name, value in zip(
+                    source.secret_names(index), (source.user, source.password)
+                )
             ),
         ],
         patches=host.patches,
@@ -962,6 +987,28 @@ async def install_claude_plugins(sandbox: Sandbox, settings: Settings) -> None:
     check_result(result, "install claude plugins")
 
 
+async def configure_nuget_sources(
+    sandbox: Sandbox, settings: Settings, target_workdir: str
+) -> None:
+    """Stores the credentials in the user-level NuGet config, keeping the repo's
+    nuget.config untouched. Idempotent, so it also runs on resumed sandboxes."""
+    if not settings.nuget_sources:
+        return
+    log(
+        f"> configuring nuget sources: {', '.join(s.name for s in settings.nuget_sources)}"
+    )
+    commands = []
+    for index, source in enumerate(settings.nuget_sources):
+        user_var, password_var = source.secret_names(index)
+        commands.append(
+            f"dotnet nuget update source {shlex.quote(source.name)} "
+            f'--username "${user_var}" --password "${password_var}" '
+            "--store-password-in-clear-text"
+        )
+    result = await sandbox.exec("sh", ["-c", " && ".join(commands)], cwd=target_workdir)
+    check_result(result, "configure nuget sources")
+
+
 async def run_session(sandbox: Sandbox, settings: Settings, target_workdir: str) -> int:
     """Runs the AI CLI, then an interactive shell. Returns the CLI's exit code."""
     profile = settings.profile
@@ -1026,6 +1073,7 @@ async def run(
                 sandbox, settings, host, target_workdir
             )
         await install_claude_plugins(sandbox, settings)
+        await configure_nuget_sources(sandbox, settings, target_workdir)
 
         if settings.worktree:
             log(f"> creating worktree for branch {settings.branch}")

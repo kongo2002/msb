@@ -54,10 +54,11 @@ Set via environment variables on the host before running `ai`:
 
 - `MSB_CLAUDE_TOKEN` / `MSB_COPILOT_TOKEN` - auth token for the selected profile, injected into
   the sandbox as a secret (`CLAUDE_CODE_OAUTH_TOKEN` / `GITHUB_TOKEN`). Required.
-- `MSB_NUGET_USER` / `MSB_NUGET_PASSWORD` - credentials (e.g. a PAT) for private NuGet feeds. Only used
-  with the `dotnet` stack; injected as `NUGET_USER` / `NUGET_PASSWORD` secrets restricted to `pkgs.dev.azure.com` and
-  `nuget.pkg.github.com`. Reference them from the project's `nuget.config` as
-  `%NUGET_USER%` / `%NUGET_PASSWORD%`. Must be set together.
+- `MSB_NUGET_SOURCES` - comma-separated `name=USER_VAR:PASSWORD_VAR` entries for private NuGet feeds,
+  where the vars are host env vars holding the credentials (e.g. a PAT). Requires the `dotnet` stack.
+  Each `name` must exist in the project's `nuget.config`; after startup `ai` runs
+  `dotnet nuget update source <name>` with the credentials, which lands in the sandbox's user-level
+  NuGet config. Secrets are restricted to `pkgs.dev.azure.com` and `nuget.pkg.github.com`.
 - `MSB_IMAGE` - override the sandbox image (default: `msb-base:latest`).
 - `MSB_EXTRA_DOMAINS` - comma-separated list of extra domains to allow through the sandbox's
   network egress policy, on top of the profile's defaults.
