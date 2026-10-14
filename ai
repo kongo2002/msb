@@ -191,6 +191,9 @@ HOST_CACHES_SANDBOX_PATH = "/home/msb/.host-caches"
 CACHE_UPPER_SANDBOX_PATH = "/home/msb/.cache-upper"
 CACHE_UPPER_MEMORY_PERCENT = 20
 
+# private NuGet feeds that receive the credentials
+NUGET_CREDENTIAL_DOMAINS = ("pkgs.dev.azure.com", "nuget.pkg.github.com")
+
 STACKS: dict[str, Stack] = {
     "dotnet": Stack(
         "dotnet",
@@ -199,6 +202,7 @@ STACKS: dict[str, Stack] = {
             "api.nuget.org",
             "globalcdn.nuget.org",
             "pkgs.dev.azure.com",
+            "nuget.pkg.github.com",
             # Azure Blob Storage - Azure Artifacts redirects .nupkg downloads here.
             "blob.core.windows.net",
         ),
@@ -592,6 +596,7 @@ class Settings:
     memory_mib: int
     extra_domains: tuple[str, ...]
     docker_images: tuple[str, ...]
+    nuget_credentials: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
 
 def split_csv(raw: str) -> list[str]:
@@ -696,6 +701,17 @@ def parse_settings() -> Settings:
             "MSB_DOCKER_IMAGES requires the docker stack (--stacks docker)"
         )
 
+    nuget_credentials = ()
+    nuget_user = os.environ.get("MSB_NUGET_USER")
+    nuget_password = os.environ.get("MSB_NUGET_PASSWORD")
+    if bool(nuget_user) != bool(nuget_password):
+        raise FatalError("MSB_NUGET_USER and MSB_NUGET_PASSWORD must be set together")
+    if nuget_user and nuget_password and "dotnet" in stack_names:
+        nuget_credentials = (
+            ("NUGET_USER", nuget_user),
+            ("NUGET_PASSWORD", nuget_password),
+        )
+
     root_disk_size = env_positive_int("MSB_ROOT_DISK_MIB", DEFAULT_ROOT_DISK_MIB)
 
     return Settings(
@@ -716,6 +732,7 @@ def parse_settings() -> Settings:
         memory_mib=env_positive_int("MSB_MEMORY_MIB", DEFAULT_MEMORY_MIB),
         extra_domains=tuple(split_csv(os.environ.get("MSB_EXTRA_DOMAINS", ""))),
         docker_images=docker_images,
+        nuget_credentials=nuget_credentials,
     )
 
 
@@ -795,6 +812,10 @@ async def provision_sandbox(
                 profile.secret_env,
                 value=settings.token,
                 allow=list(profile.secret_allow_domains),
+            ),
+            *(
+                Secret.env(name, value=value, allow=list(NUGET_CREDENTIAL_DOMAINS))
+                for name, value in settings.nuget_credentials
             ),
         ],
         patches=host.patches,
