@@ -9,6 +9,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/dotnet:/opt/dotnet/tools:/usr/local/bin:/usr/local/share/pnpm/bin:$PATH" \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
+    DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=1 \
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
     PNPM_HOME=/usr/local/share/pnpm \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
     COPILOT_AUTO_UPDATE=false \
@@ -84,7 +86,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
  && uv python install 3.14 --default
 
 RUN flutter config --no-analytics \
- && flutter precache \
+ && flutter precache --web \
  && flutter doctor -v \
  && flutter --version \
  && dotnet --version
