@@ -38,6 +38,8 @@ ai [<branch>] [--worktree] [--profile copilot|claude] [--stacks dotnet,node,dart
   (`docker` starts `dockerd` in the sandbox and allows Docker Hub egress).
 - `--context` - pass an additional git repository as a context/reference which
   will be mounted read-only into the sandbox
+- `--port` - expose a sandbox TCP port on the host's loopback as `[HOST:]GUEST` (repeatable).
+  The service must listen on `0.0.0.0` inside the sandbox. Fixed at creation; ignored on resume.
 - `--no-memory` - disable the persistent cross-project agent memory mount (see below)
 
 On exit:

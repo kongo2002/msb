@@ -28,6 +28,7 @@ from microsandbox import (
     Network,
     NetworkPolicy,
     Patch,
+    PortBinding,
     RootDisk,
     Rule,
     Sandbox,
@@ -607,6 +608,7 @@ class Settings:
     extra_domains: tuple[str, ...]
     docker_images: tuple[str, ...]
     nuget_sources: tuple[NugetSource, ...] = ()
+    ports: tuple[PortBinding, ...] = ()
 
 
 def split_csv(raw: str) -> list[str]:
@@ -628,6 +630,20 @@ def parse_nuget_sources(raw: str) -> tuple[NugetSource, ...]:
     if len({source.name for source in sources}) != len(sources):
         raise FatalError("MSB_NUGET_SOURCES contains duplicate source names")
     return tuple(sources)
+
+
+def parse_port_binding(raw: str) -> PortBinding:
+    """Parses `[HOST:]GUEST`; the host port defaults to the guest port."""
+    host, _, guest = raw.rpartition(":")
+    try:
+        guest_port = int(guest)
+        host_port = int(host) if host else guest_port
+    except ValueError:
+        raise FatalError(f"invalid --port {raw!r}, expected [HOST:]GUEST") from None
+    for port in (host_port, guest_port):
+        if not 1 <= port <= 65535:
+            raise FatalError(f"invalid --port {raw!r}, ports must be 1-65535")
+    return PortBinding.tcp(host_port, guest_port)
 
 
 def parse_settings() -> Settings:
@@ -667,6 +683,14 @@ def parse_settings() -> Settings:
         help=(
             "path to a second, separate host git repo to mount read-only for "
             "reference (repeatable for multiple context repos)"
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        action="append",
+        help=(
+            "expose a sandbox TCP port on the host's loopback as [HOST:]GUEST "
+            "(repeatable). the service must listen on 0.0.0.0 in the sandbox"
         ),
     )
     parser.add_argument(
@@ -713,6 +737,11 @@ def parse_settings() -> Settings:
             f"choices: {', '.join(sorted(STACKS))}"
         )
 
+    ports = tuple(parse_port_binding(raw) for raw in args.port or ())
+    host_ports = [port.host_port for port in ports]
+    if len(set(host_ports)) != len(host_ports):
+        raise FatalError("--port host ports must be distinct")
+
     token = os.environ.get(profile.token_env)
     if not token:
         raise FatalError(
@@ -755,6 +784,7 @@ def parse_settings() -> Settings:
         extra_domains=tuple(split_csv(os.environ.get("MSB_EXTRA_DOMAINS", ""))),
         docker_images=docker_images,
         nuget_sources=nuget_sources,
+        ports=ports,
     )
 
 
@@ -823,6 +853,8 @@ async def provision_sandbox(
         resuming = False
 
     log("> resuming sandbox" if resuming else "> creating sandbox")
+    if resuming and settings.ports:
+        log("> warning: --port is ignored when resuming; bindings are fixed at creation")
     sandbox = await Sandbox.connect_or_create(
         sandbox_name,
         image=settings.image,
@@ -845,6 +877,7 @@ async def provision_sandbox(
         ],
         patches=host.patches,
         volumes=host.volumes,
+        ports=list(settings.ports),
     )
     return sandbox, resuming
 
