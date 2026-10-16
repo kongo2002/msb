@@ -2,15 +2,15 @@
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def reset_info_for(ts):
     if not ts:
         return ""
     try:
-        dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
-        secs = int((dt - datetime.now(timezone.utc)).total_seconds())
+        dt = datetime.fromtimestamp(float(ts), tz=UTC)
+        secs = int((dt - datetime.now(UTC)).total_seconds())
     except (TypeError, ValueError):
         return ""
     if secs <= 0:
