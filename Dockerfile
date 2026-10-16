@@ -18,10 +18,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # general dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git unzip xz-utils zip ca-certificates ripgrep less zsh vim iptables libnss3-tools build-essential libicu78
+    curl git unzip xz-utils zip ca-certificates ripgrep less zsh vim iptables libnss3-tools build-essential libicu78 protobuf-compiler libprotobuf-dev
 
 # nodejs
-RUN curl -sL https://deb.nodesource.com/setup_25.x -o nodesource_setup.sh \
+RUN curl -sL https://deb.nodesource.com/setup_26.x -o nodesource_setup.sh \
     && bash nodesource_setup.sh \
     && apt-get install -y --no-install-recommends nodejs \
     && rm nodesource_setup.sh \
@@ -41,21 +41,19 @@ RUN PREFIX="/usr/local" && \
     "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-$(uname -s)-$(uname -m).tar.gz" | \
     tar -xvzf - -C "${PREFIX}" --strip-components 1
 
-# copilot
-RUN pnpm add -g @github/copilot
-
-# language servers (used by claude LSP plugins)
-RUN pnpm add -g typescript typescript-language-server pyright
+# copilot + language servers (used by claude LSP plugins) + playwright
+RUN pnpm add -g @github/copilot typescript typescript-language-server pyright @playwright/cli@latest
 
 # dotnet
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir /opt/dotnet
 
 # docker
-RUN curl -fsSL https://get.docker.com -o get-docker.sh && sh ./get-docker.sh && rm get-docker.sh
+RUN curl -fsSL https://get.docker.com -o get-docker.sh && sh ./get-docker.sh && rm get-docker.sh \
+    && rm -rf /var/lib/apt/lists/*
 
 # playwright
-RUN pnpm add -g @playwright/cli@latest \
-    && playwright-cli install-browser chromium --with-deps
+RUN playwright-cli install-browser chromium --with-deps \
+    && rm -rf /var/lib/apt/lists/*
 
 # user setup
 RUN useradd -m -u 1001 -s /bin/zsh -G docker msb
@@ -98,9 +96,6 @@ RUN git config --global --add safe.directory '*' \
 # dart protoc plugin
 RUN dart pub global activate protoc_plugin ${DART_PROTOC_PLUGIN_VERSION} \
   && dart --disable-analytics
-
-# azure credentials provider
-RUN curl -fsSL https://aka.ms/install-artifacts-credprovider.sh | bash
 
 # claude settings
 # - skip onboarding wizard on first run in the sandbox
