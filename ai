@@ -690,7 +690,8 @@ def parse_settings() -> Settings:
         action="append",
         help=(
             "expose a sandbox TCP port on the host's loopback as [HOST:]GUEST "
-            "(repeatable). the service must listen on 0.0.0.0 in the sandbox"
+            "(repeatable, or set MSB_PORTS). the service must listen on "
+            "0.0.0.0 in the sandbox"
         ),
     )
     parser.add_argument(
@@ -737,7 +738,10 @@ def parse_settings() -> Settings:
             f"choices: {', '.join(sorted(STACKS))}"
         )
 
-    ports = tuple(parse_port_binding(raw) for raw in args.port or ())
+    raw_ports = dict.fromkeys(
+        [*(args.port or ()), *split_csv(os.environ.get("MSB_PORTS", ""))]
+    )
+    ports = tuple(parse_port_binding(raw) for raw in raw_ports)
     host_ports = [port.host_port for port in ports]
     if len(set(host_ports)) != len(host_ports):
         raise FatalError("--port host ports must be distinct")

@@ -70,6 +70,7 @@ Set via environment variables on the host before running `ai`:
 - `MSB_CPUS` / `MSB_MEMORY_MIB` - sandbox vCPUs and memory in MiB (default: `4` / `4096`).
   With the `docker` stack, 50% of the memory is used as the docker data tmpfs.
 - `MSB_STACKS` - comma-separated stacks, alternative to `--stacks`. Both are merged together.
+- `MSB_PORTS` - comma-separated `[HOST:]GUEST` ports, alternative to `--port`. Both are merged together.
 
 Each profile also mirrors selected host config into the sandbox if present (e.g.
 `~/.claude/CLAUDE.md`, `~/.claude/skills`, `~/.claude/agents` for the `claude` profile;
