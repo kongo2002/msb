@@ -592,6 +592,16 @@ class NugetSource:
 
 
 @dataclass(frozen=True)
+class GitCredential:
+    host: str
+    user: str = field(repr=False)
+    token: str = field(repr=False)
+
+    def secret_names(self, index: int) -> tuple[str, str]:
+        return f"GIT_{index}_USER", f"GIT_{index}_TOKEN"
+
+
+@dataclass(frozen=True)
 class Settings:
     branch: str | None  # None: store results in a generated branch name
     profile: Profile
@@ -608,6 +618,7 @@ class Settings:
     extra_domains: tuple[str, ...]
     docker_images: tuple[str, ...]
     nuget_sources: tuple[NugetSource, ...] = ()
+    git_credentials: tuple[GitCredential, ...] = ()
     ports: tuple[PortBinding, ...] = ()
 
 
@@ -616,7 +627,7 @@ def split_csv(raw: str) -> list[str]:
 
 
 def parse_nuget_sources(raw: str) -> tuple[NugetSource, ...]:
-    """Parses `name=USER_VAR:PASSWORD_VAR,...`, where the vars are host env vars."""
+    """Parses `name=USER:PASSWORD,...`."""
     sources = []
     for entry in split_csv(raw):
         name, _, var_names = entry.partition("=")
@@ -624,12 +635,28 @@ def parse_nuget_sources(raw: str) -> tuple[NugetSource, ...]:
         if not (name and user and password):
             raise FatalError(
                 f"invalid MSB_NUGET_SOURCES entry {entry!r}, "
-                "expected name=USER_VAR:PASSWORD_VAR"
+                "expected name=USER:PASSWORD"
             )
         sources.append(NugetSource(name, user, password))
     if len({source.name for source in sources}) != len(sources):
         raise FatalError("MSB_NUGET_SOURCES contains duplicate source names")
     return tuple(sources)
+
+
+def parse_git_credentials(raw: str) -> tuple[GitCredential, ...]:
+    """Parses `host=USER:TOKEN,...`."""
+    credentials = []
+    for entry in split_csv(raw):
+        host, _, var_names = entry.partition("=")
+        user, _, token = var_names.partition(":")
+        if not (host and user and token):
+            raise FatalError(
+                f"invalid MSB_GIT_CREDENTIALS entry {entry!r}, expected host=USER:TOKEN"
+            )
+        credentials.append(GitCredential(host, user, token))
+    if len({credential.host for credential in credentials}) != len(credentials):
+        raise FatalError("MSB_GIT_CREDENTIALS contains duplicate hosts")
+    return tuple(credentials)
 
 
 def parse_port_binding(raw: str) -> PortBinding:
@@ -767,6 +794,8 @@ def parse_settings() -> Settings:
             "MSB_NUGET_SOURCES requires the dotnet stack (--stacks dotnet)"
         )
 
+    git_credentials = parse_git_credentials(os.environ.get("MSB_GIT_CREDENTIALS", ""))
+
     root_disk_size = env_positive_int("MSB_ROOT_DISK_MIB", DEFAULT_ROOT_DISK_MIB)
 
     return Settings(
@@ -785,9 +814,13 @@ def parse_settings() -> Settings:
         ),
         cpus=env_positive_int("MSB_CPUS", DEFAULT_CPUS),
         memory_mib=env_positive_int("MSB_MEMORY_MIB", DEFAULT_MEMORY_MIB),
-        extra_domains=tuple(split_csv(os.environ.get("MSB_EXTRA_DOMAINS", ""))),
+        extra_domains=(
+            *split_csv(os.environ.get("MSB_EXTRA_DOMAINS", "")),
+            *(credential.host for credential in git_credentials),
+        ),
         docker_images=docker_images,
         nuget_sources=nuget_sources,
+        git_credentials=git_credentials,
         ports=ports,
     )
 
@@ -858,7 +891,9 @@ async def provision_sandbox(
 
     log("> resuming sandbox" if resuming else "> creating sandbox")
     if resuming and settings.ports:
-        log("> warning: --port is ignored when resuming; bindings are fixed at creation")
+        log(
+            "> warning: --port is ignored when resuming; bindings are fixed at creation"
+        )
     sandbox = await Sandbox.connect_or_create(
         sandbox_name,
         image=settings.image,
@@ -870,6 +905,13 @@ async def provision_sandbox(
                 profile.secret_env,
                 value=settings.token,
                 allow=list(profile.secret_allow_domains),
+            ),
+            *(
+                Secret.env(name, value=value, allow=[credential.host])
+                for index, credential in enumerate(settings.git_credentials)
+                for name, value in zip(
+                    credential.secret_names(index), (credential.user, credential.token)
+                )
             ),
             *(
                 Secret.env(name, value=value, allow=list(NUGET_CREDENTIAL_DOMAINS))
@@ -1046,6 +1088,27 @@ async def configure_nuget_sources(
     check_result(result, "configure nuget sources")
 
 
+async def configure_git_credentials(sandbox: Sandbox, settings: Settings) -> None:
+    """Rewrites plain and ssh URLs of the configured hosts to authenticated https.
+    The values are secret placeholders, resolved on the wire."""
+    if not settings.git_credentials:
+        return
+    log(
+        f"> configuring git credentials: {', '.join(c.host for c in settings.git_credentials)}"
+    )
+    commands = []
+    for index, credential in enumerate(settings.git_credentials):
+        user_var, token_var = credential.secret_names(index)
+        host = credential.host
+        target = f'"https://${user_var}:${token_var}@{host}/"'
+        for prefix in (f"https://{host}/", f"git@{host}:", f"ssh://git@{host}/"):
+            commands.append(
+                f"git config --global --add url.{target}.insteadOf {shlex.quote(prefix)}"
+            )
+    result = await sandbox.exec("sh", ["-c", " && ".join(commands)])
+    check_result(result, "configure git credentials")
+
+
 async def run_session(sandbox: Sandbox, settings: Settings, target_workdir: str) -> int:
     """Runs the AI CLI, then an interactive shell. Returns the CLI's exit code."""
     profile = settings.profile
@@ -1109,6 +1172,7 @@ async def run(
             base_sha = await prepare_fresh_sandbox(
                 sandbox, settings, host, target_workdir
             )
+            await configure_git_credentials(sandbox, settings)
         await install_claude_plugins(sandbox, settings)
         await configure_nuget_sources(sandbox, settings, target_workdir)
 

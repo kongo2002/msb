@@ -56,11 +56,15 @@ Set via environment variables on the host before running `ai`:
 
 - `MSB_CLAUDE_TOKEN` / `MSB_COPILOT_TOKEN` - auth token for the selected profile, injected into
   the sandbox as a secret (`CLAUDE_CODE_OAUTH_TOKEN` / `GITHUB_TOKEN`). Required.
-- `MSB_NUGET_SOURCES` - comma-separated `name=USER_VAR:PASSWORD_VAR` entries for private NuGet feeds,
-  where the vars are host env vars holding the credentials (e.g. a PAT). Requires the `dotnet` stack.
+- `MSB_NUGET_SOURCES` - comma-separated `name=USER:PASSWORD` entries for private NuGet feeds,
+  with the credentials given directly (e.g. a PAT). Requires the `dotnet` stack.
   Each `name` must exist in the project's `nuget.config`; after startup `ai` runs
   `dotnet nuget update source <name>` with the credentials, which lands in the sandbox's user-level
   NuGet config. Secrets are restricted to `pkgs.dev.azure.com` and `nuget.pkg.github.com`.
+- `MSB_GIT_CREDENTIALS` - comma-separated `host=USER:TOKEN` entries (e.g.
+  `github.com=me:ghp_...`) for private git dependencies such as dart/flutter packages. After startup `ai` adds global git `insteadOf` rules rewriting
+  `https://host/`, `git@host:` and `ssh://git@host/` to authenticated https. Secrets are restricted to `host`, which
+  is also added to the egress allowlist.
 - `MSB_IMAGE` - override the sandbox image (default: `msb-base:latest`).
 - `MSB_EXTRA_DOMAINS` - comma-separated list of extra domains to allow through the sandbox's
   network egress policy, on top of the profile's defaults.
