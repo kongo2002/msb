@@ -673,9 +673,33 @@ def parse_port_binding(raw: str) -> PortBinding:
     return PortBinding.tcp(host_port, guest_port)
 
 
+ENV_HELP = f"""\
+environment variables:
+  MSB_CLAUDE_TOKEN, MSB_COPILOT_TOKEN
+                        auth token of the selected profile (required)
+  MSB_REFERENCE         reference branch, alternative to --ref
+  MSB_STACKS            comma-separated stacks, merged with --stacks
+  MSB_PORTS             comma-separated [HOST:]GUEST ports, merged with --port
+  MSB_EXTRA_DOMAINS     comma-separated extra domains allowed for egress
+  MSB_IMAGE             sandbox image (default: {DEFAULT_IMAGE_TAG})
+  MSB_CPUS              sandbox vCPUs (default: {DEFAULT_CPUS})
+  MSB_MEMORY_MIB        sandbox memory in MiB (default: {DEFAULT_MEMORY_MIB})
+  MSB_ROOT_DISK_MIB     sandbox root disk in MiB (default: {DEFAULT_ROOT_DISK_MIB})
+  MSB_DOCKER_IMAGES     comma-separated host docker images to preload
+                        (requires the docker stack)
+  MSB_NUGET_SOURCES     comma-separated name=USER:PASSWORD private NuGet
+                        feeds (requires the dotnet stack)
+  MSB_GIT_CREDENTIALS   comma-separated host=USER:TOKEN for private git
+                        dependencies
+"""
+
+
 def parse_settings() -> Settings:
     """Single place that reads CLI arguments and environment variables."""
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=ENV_HELP,
+    )
     parser.add_argument(
         "branch",
         nargs="?",

@@ -73,6 +73,7 @@ Set via environment variables on the host before running `ai`:
   pulled on the host; exports are cached in `~/.msb/docker-images/`.
 - `MSB_CPUS` / `MSB_MEMORY_MIB` - sandbox vCPUs and memory in MiB (default: `4` / `4096`).
   With the `docker` stack, 50% of the memory is used as the docker data tmpfs.
+- `MSB_ROOT_DISK_MIB` - sandbox root disk size in MiB (default: `16384`).
 - `MSB_STACKS` - comma-separated stacks, alternative to `--stacks`. Both are merged together.
 - `MSB_PORTS` - comma-separated `[HOST:]GUEST` ports, alternative to `--port`. Both are merged together.
 
