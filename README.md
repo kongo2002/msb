@@ -102,3 +102,9 @@ instruction (a preference, a correction, a habit to carry into unrelated
 future projects). Repo- or task-specific detail doesn't belong there.
 
 Disable this with `--no-memory` for a given run.
+
+## Dropping images
+
+Pasting clipboard images doesn't work inside the sandbox. If `~/.msb/drop`
+exists on the host, it is mounted read-only at `/home/msb/drop`; save a
+screenshot there and reference it as `@/home/msb/drop/<file>`.
