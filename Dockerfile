@@ -4,6 +4,7 @@ ARG FLUTTER_VERSION="3.44.8"
 ARG JUST_VERSION="1.58.0"
 ARG DART_PROTOC_PLUGIN_VERSION="24.0.0"
 ARG BUF_VERSION="1.70.0"
+ARG TERRAFORM_VERSION="1.16.6"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/dotnet:/opt/dotnet/tools:/usr/local/bin:/usr/local/share/pnpm/bin:$PATH" \
@@ -54,6 +55,19 @@ RUN curl -fsSL https://get.docker.com -o get-docker.sh && sh ./get-docker.sh && 
 # playwright
 RUN playwright-cli install-browser chromium --with-deps \
     && rm -rf /var/lib/apt/lists/*
+
+# terraform
+RUN set -eux; \
+  ARCH="$(uname -m)"; \
+  case "$ARCH" in \
+    x86_64|amd64) ARCH=amd64 ;; \
+    aarch64|arm64) ARCH=arm64 ;; \
+    *) echo "unsupported arch: $ARCH"; exit 1 ;; \
+  esac; \
+  curl -fsSL -o /tmp/terraform.zip \
+    "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${ARCH}.zip" && \
+  unzip /tmp/terraform.zip -d /usr/local/bin terraform && \
+  rm /tmp/terraform.zip
 
 # user setup
 RUN useradd -m -u 1001 -s /bin/zsh -G docker msb
