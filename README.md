@@ -40,6 +40,7 @@ ai [<branch>] [--worktree] [--profile copilot|claude] [--stacks dotnet,node,dart
   will be mounted read-only into the sandbox
 - `--port` - expose a sandbox TCP port on the host's loopback as `[HOST:]GUEST` (repeatable).
   The service must listen on `0.0.0.0` inside the sandbox. Fixed at creation; ignored on resume.
+- `--mcp` - enable an MCP server by name from `~/.msb/mcp.json` (repeatable, see below)
 - `--no-memory` - disable the persistent cross-project agent memory mount (see below)
 
 On exit:
@@ -76,6 +77,7 @@ Set via environment variables on the host before running `ai`:
 - `MSB_ROOT_DISK_MIB` - sandbox root disk size in MiB (default: `16384`).
 - `MSB_STACKS` - comma-separated stacks, alternative to `--stacks`. Both are merged together.
 - `MSB_PORTS` - comma-separated `[HOST:]GUEST` ports, alternative to `--port`. Both are merged together.
+- `MSB_MCP` - comma-separated MCP server names, alternative to `--mcp`. Both are merged together.
 
 Each profile also mirrors selected host config into the sandbox if present (e.g.
 `~/.claude/CLAUDE.md`, `~/.claude/skills`, `~/.claude/agents` for the `claude` profile;
@@ -86,6 +88,23 @@ If the repo you're running `ai` in has a repo-root `CLAUDE.md` that's untracked
 otherwise only committed files reach the sandbox.
 
 Your host git identity (`user.name`/`user.email`) is copied into the sandbox automatically.
+
+## MCP servers
+
+`~/.msb/mcp.json` is a catalog in the usual `mcpServers` format. Nothing is loaded
+by default; `--mcp NAME` / `MSB_MCP` select entries, which are passed to the CLI
+inline (`--mcp-config` for `claude`, `--additional-mcp-config` for `copilot`).
+
+- `url` servers must be `https` on port 443; their host is added to the egress allowlist
+- `${VAR}` in `headers` is resolved from the host env and injected as a secret
+  restricted to the server's host. Not supported anywhere else
+- `command` servers need their binary in the image and their registry via `--stacks`
+- egress and secrets are fixed at sandbox creation; ignored on resume
+
+```json
+{"mcpServers": {"docs": {"type": "http", "url": "https://mcp.example.com/mcp",
+                         "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"}}}}
+```
 
 ## Agent memory
 

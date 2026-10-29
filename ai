@@ -9,6 +9,7 @@
 import argparse
 import asyncio
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -19,6 +20,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from microsandbox import (
     Action,
@@ -104,6 +106,7 @@ class Profile:
     extra_domains: tuple[str, ...]
     binary: str
     binary_args: tuple[str, ...]
+    mcp_flag: str  # CLI flag that takes MCP servers as an inline JSON string
     memory_flag: str | None = (
         None  # CLI flag that takes a single dynamic instruction string
     )
@@ -145,6 +148,7 @@ PROFILES: dict[str, Profile] = {
         ),
         binary="copilot",
         binary_args=("--allow-all", "--disable-mcp-server", "github-mcp-server"),
+        mcp_flag="--additional-mcp-config",
         config_paths=(".copilot/instructions",),
         # no system-prompt append flag; append to a dedicated instructions file
         # instead (copilot only picks up files matching
@@ -162,6 +166,7 @@ PROFILES: dict[str, Profile] = {
         ),
         binary="claude",
         binary_args=("--dangerously-skip-permissions",),
+        mcp_flag="--mcp-config",
         memory_flag="--append-system-prompt",
         config_paths=(".claude/CLAUDE.md", ".claude/skills", ".claude/agents"),
     ),
@@ -447,6 +452,86 @@ def build_context_repo_volume(raw_path: str) -> tuple[str, dict[str, object]]:
     return sandbox_path, {sandbox_path: Volume.bind(host_path, readonly=True)}
 
 
+MCP_CATALOG_PATH = "~/.msb/mcp.json"
+MCP_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+@dataclass(frozen=True)
+class McpConfig:
+    json: str  # empty if no servers are selected
+    domains: tuple[str, ...]
+    secrets: tuple[Secret, ...]
+
+
+def build_mcp_config(names: tuple[str, ...]) -> McpConfig:
+    """Selects servers from the host catalog. For url servers the egress domain
+    is derived from the url, and `${VAR}` in headers is resolved from the host
+    env into a secret scoped to that domain."""
+    if not names:
+        return McpConfig("", (), ())
+    try:
+        with open(os.path.expanduser(MCP_CATALOG_PATH)) as f:
+            catalog = json.load(f)["mcpServers"]
+    except (OSError, ValueError, KeyError) as e:
+        raise FatalError(
+            f"cannot read mcpServers from {MCP_CATALOG_PATH}: {e!r}"
+        ) from None
+    unknown = [name for name in names if name not in catalog]
+    if unknown:
+        raise FatalError(
+            f"unknown mcp server(s): {', '.join(unknown)}; "
+            f"choices: {', '.join(sorted(catalog))}"
+        )
+
+    servers: dict[str, dict] = {}
+    domains: list[str] = []
+    secrets: dict[str, Secret] = {}
+    for index, name in enumerate(names):
+        server = dict(catalog[name])
+        url = server.get("url")
+        secret_fields = ("headers",) if url else ()
+        unsupported = {k: v for k, v in server.items() if k not in secret_fields}
+        if MCP_PLACEHOLDER.search(json.dumps(unsupported)):
+            raise FatalError(
+                f"mcp server {name!r}: ${{VAR}} is only supported in the headers "
+                "of url servers"
+            )
+        if url:
+            parsed = urlparse(url)
+            # egress rules only open port 443
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.port not in (None, 443)
+            ):
+                raise FatalError(f"mcp server {name!r}: url must be https on port 443")
+            domain = parsed.hostname
+            domains.append(domain)
+
+            def to_secret(match: re.Match[str], index=index, domain=domain) -> str:
+                var = match.group(1)
+                value = os.environ.get(var)
+                if not value:
+                    raise FatalError(
+                        f"Set {var} in your host shell (used by mcp server)"
+                    )
+                sandbox_var = f"MCP_{index}_{var}"
+                secrets[sandbox_var] = Secret.env(
+                    sandbox_var, value=value, allow=[domain]
+                )
+                return f"${{{sandbox_var}}}"
+
+            if "headers" in server:
+                server["headers"] = {
+                    key: MCP_PLACEHOLDER.sub(to_secret, value)
+                    for key, value in server["headers"].items()
+                }
+        servers[name] = server
+    return McpConfig(
+        json.dumps({"mcpServers": servers}), tuple(domains), tuple(secrets.values())
+    )
+
+
 def host_git_identity() -> tuple[str | None, str | None]:
     def get(key: str) -> str | None:
         result = run_host(["git", "config", key])
@@ -630,6 +715,7 @@ class Settings:
     memory_mib: int
     extra_domains: tuple[str, ...]
     docker_images: tuple[str, ...]
+    mcp_names: tuple[str, ...] = ()
     nuget_sources: tuple[NugetSource, ...] = ()
     git_credentials: tuple[GitCredential, ...] = ()
     ports: tuple[PortBinding, ...] = ()
@@ -693,6 +779,8 @@ environment variables:
   MSB_REFERENCE         reference branch, alternative to --ref
   MSB_STACKS            comma-separated stacks, merged with --stacks
   MSB_PORTS             comma-separated [HOST:]GUEST ports, merged with --port
+  MSB_MCP               comma-separated MCP servers from ~/.msb/mcp.json,
+                        merged with --mcp
   MSB_EXTRA_DOMAINS     comma-separated extra domains allowed for egress
   MSB_IMAGE             sandbox image (default: {DEFAULT_IMAGE_TAG})
   MSB_CPUS              sandbox vCPUs (default: {DEFAULT_CPUS})
@@ -759,6 +847,14 @@ def parse_settings() -> Settings:
         ),
     )
     parser.add_argument(
+        "--mcp",
+        action="append",
+        help=(
+            "MCP server to enable, selected by name from ~/.msb/mcp.json "
+            "(repeatable, or set MSB_MCP)"
+        ),
+    )
+    parser.add_argument(
         "--no-memory",
         action="store_true",
         help="disable the persistent cross-project agent memory mount",
@@ -810,6 +906,10 @@ def parse_settings() -> Settings:
     if len(set(host_ports)) != len(host_ports):
         raise FatalError("--port host ports must be distinct")
 
+    mcp_names = tuple(
+        dict.fromkeys([*(args.mcp or ()), *split_csv(os.environ.get("MSB_MCP", ""))])
+    )
+
     token = os.environ.get(profile.token_env)
     if not token:
         raise FatalError(
@@ -856,6 +956,7 @@ def parse_settings() -> Settings:
             *(credential.host for credential in git_credentials),
         ),
         docker_images=docker_images,
+        mcp_names=mcp_names,
         nuget_sources=nuget_sources,
         git_credentials=git_credentials,
         ports=ports,
@@ -876,6 +977,8 @@ class HostInputs:
     patches: tuple[object, ...]
     volumes: Mapping[str, object]
     domains: tuple[str, ...]
+    mcp_json: str
+    secrets: tuple[Secret, ...]
 
 
 def prepare_host_inputs(
@@ -893,6 +996,7 @@ def prepare_host_inputs(
         volumes.update(build_memory_volume(profile))
 
     volumes.update(build_drop_volume())
+    mcp = build_mcp_config(settings.mcp_names)
 
     if settings.context_paths:
         for context_path in settings.context_paths:
@@ -913,7 +1017,9 @@ def prepare_host_inputs(
             *local_claude_md_patches,
         ),
         volumes=volumes,
-        domains=(*settings.extra_domains, *stack_domains),
+        domains=(*settings.extra_domains, *stack_domains, *mcp.domains),
+        mcp_json=mcp.json,
+        secrets=mcp.secrets,
     )
 
 
@@ -933,6 +1039,10 @@ async def provision_sandbox(
         log(
             "> warning: --port is ignored when resuming; bindings are fixed at creation"
         )
+    if resuming and settings.mcp_names:
+        log(
+            "> warning: mcp domains and secrets are fixed at creation; ignored on resume"
+        )
     sandbox = await Sandbox.connect_or_create(
         sandbox_name,
         image=settings.image,
@@ -940,6 +1050,7 @@ async def provision_sandbox(
         memory=settings.memory_mib,
         network=build_network(profile.extra_domains, host.domains),
         secrets=[
+            *host.secrets,
             Secret.env(
                 profile.secret_env,
                 value=settings.token,
@@ -1148,10 +1259,14 @@ async def configure_git_credentials(sandbox: Sandbox, settings: Settings) -> Non
     check_result(result, "configure git credentials")
 
 
-async def run_session(sandbox: Sandbox, settings: Settings, target_workdir: str) -> int:
+async def run_session(
+    sandbox: Sandbox, settings: Settings, host: HostInputs, target_workdir: str
+) -> int:
     """Runs the AI CLI, then an interactive shell. Returns the CLI's exit code."""
     profile = settings.profile
     binary_args = list(profile.binary_args)
+    if host.mcp_json:
+        binary_args = [*binary_args, profile.mcp_flag, host.mcp_json]
     if settings.use_memory:
         if profile.memory_config_path:
             await append_memory_instructions(sandbox, profile.memory_config_path)
@@ -1223,7 +1338,7 @@ async def run(
 
         # from here on the sandbox may hold work that exists nowhere else
         uncollected = True
-        exit_code = await run_session(sandbox, settings, target_workdir)
+        exit_code = await run_session(sandbox, settings, host, target_workdir)
 
         # determined before collecting so a collection failure still keeps the sandbox
         keep_alive = await consume_keep_alive_marker(sandbox)
