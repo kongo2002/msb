@@ -209,8 +209,9 @@ STACKS: dict[str, Stack] = {
             "globalcdn.nuget.org",
             "pkgs.dev.azure.com",
             "nuget.pkg.github.com",
-            # Azure Blob Storage - Azure Artifacts redirects .nupkg downloads here.
-            "blob.core.windows.net",
+            # Azure Blob Storage - Azure Artifacts redirects .nupkg downloads
+            # to per-account subdomains.
+            "*.blob.core.windows.net",
         ),
     ),
     "node": Stack(
@@ -669,13 +670,23 @@ def sandbox_name_for(path: str, profile_name: str, branch: str) -> str:
     return f"{profile_name}-{digest}"
 
 
+def domain_destination(domain: str):
+    if domain.startswith("*."):
+        return Destination.domain_suffix(domain[1:])
+    if "*" in domain:
+        raise FatalError(
+            f"unsupported wildcard in domain {domain!r}, use '*.example.com'"
+        )
+    return Destination.domain(domain)
+
+
 def build_network(
     profile_extra_domains: tuple[str, ...], user_extra_domains: tuple[str, ...] = ()
 ) -> Network:
     rules = list(Rule.allow_dns())
     all_domains = (*BASE_DOMAINS, *profile_extra_domains, *user_extra_domains)
     for domain in dict.fromkeys(all_domains):
-        rules.append(Rule.allow(destination=Destination.domain(domain), port=443))
+        rules.append(Rule.allow(destination=domain_destination(domain), port=443))
     return Network(policy=NetworkPolicy(default_egress=Action.DENY, rules=tuple(rules)))
 
 
@@ -782,6 +793,7 @@ environment variables:
   MSB_MCP               comma-separated MCP servers from ~/.msb/mcp.json,
                         merged with --mcp
   MSB_EXTRA_DOMAINS     comma-separated extra domains allowed for egress
+                        (`*.example.com` matches all subdomains)
   MSB_IMAGE             sandbox image (default: {DEFAULT_IMAGE_TAG})
   MSB_CPUS              sandbox vCPUs (default: {DEFAULT_CPUS})
   MSB_MEMORY_MIB        sandbox memory in MiB (default: {DEFAULT_MEMORY_MIB})
